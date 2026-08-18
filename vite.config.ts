@@ -10,8 +10,8 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.png', 'apple-touch-icon.png'],
       manifest: {
-        name: 'FreshMart Billing',
-        short_name: 'FreshMart',
+        name: 'New Manikanta Agencies Billing',
+        short_name: 'New Manikanta',
         description: 'Wholesale billing, products, staff and attendance management',
         theme_color: '#059669',
         background_color: '#ffffff',
