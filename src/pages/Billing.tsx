@@ -352,11 +352,19 @@ export default function Billing() {
                         </button>
                         <input
                           type="number"
+                          step="0.01"
+                          min="0"
                           value={c.quantity}
                           onChange={(e) =>
-                            setQty(c.product_id, parseInt(e.target.value) || 0)
+                            setQty(c.product_id, parseFloat(e.target.value) || 0)
                           }
-                          className="w-10 text-center text-sm font-semibold border border-slate-200 rounded py-0.5 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                          onBlur={(e) => {
+                            // If left blank or invalid on blur, snap back to a safe value
+                            if (e.target.value === '' || isNaN(parseFloat(e.target.value))) {
+                              setQty(c.product_id, c.quantity);
+                            }
+                          }}
+                          className="w-14 text-center text-sm font-semibold border border-slate-200 rounded py-0.5 focus:outline-none focus:ring-1 focus:ring-emerald-500"
                         />
                         <button
                           onClick={() => updateQty(c.product_id, 1)}
