@@ -24,9 +24,11 @@ function App() {
       {/* Sidebar (desktop) */}
       <aside className="hidden lg:flex w-60 bg-white border-r border-slate-200 flex-col">
         <div className="flex items-center gap-2.5 px-5 py-5 border-b border-slate-100">
-          <div className="bg-emerald-600 text-white p-2 rounded-lg">
+          {/* <div className="bg-emerald-600 text-white p-2 rounded-lg">
             <Store size={20} />
-          </div>
+          </div> */}
+          {/* This is the new line */}
+          <img src="/favicon.png" alt="New Manikanta Agencies" className="w-10 h-10 rounded-lg object-contain"/> 
           <div>
             <h1 className="font-bold text-slate-800 text-sm leading-tight">New Manikanta Agencies</h1>
             <p className="text-[11px] text-slate-400">Billing System</p>
@@ -55,9 +57,11 @@ function App() {
 
       {/* Top bar (mobile) */}
       <header className="lg:hidden bg-white border-b border-slate-200 px-4 py-3 flex items-center gap-2.5 sticky top-0 z-40">
-        <div className="bg-emerald-600 text-white p-1.5 rounded-lg">
+        {/* <div className="bg-emerald-600 text-white p-1.5 rounded-lg">
           <Store size={18} />
-        </div>
+        </div> */}
+        {/* This is the new line */}
+        <img src="/favicon.png" alt="New Manikanta Agencies" className="w-10 h-10 rounded-lg object-contain"/>
         <h1 className="font-bold text-slate-800 text-sm">New Manikanta Agencies</h1>
       </header>
 
