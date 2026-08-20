@@ -19,6 +19,70 @@ import {
   IndianRupee,
 } from 'lucide-react';
 
+/**
+ * A text-based numeric input for quantities/rates that need free decimal
+ * typing (e.g. 0.100, 0.250, 0.5 for loose grocery items sold by weight).
+ *
+ * A plain <input type="number"> re-formats its displayed value from the
+ * bound number on every keystroke. That's fine for whole numbers, but it
+ * breaks decimals that start with "0." — the moment you type the ".", the
+ * number 0 renders back as "0", silently deleting the decimal point you
+ * just typed, so "0.25" becomes "025" (parsed as 25) instead of 0.25.
+ *
+ * This component keeps whatever text you've actually typed on screen while
+ * you're typing (only re-syncing from the outside value when the field
+ * isn't focused — e.g. after the +/- buttons change it), so partial states
+ * like "0.", "0.2", "0.25" all stay exactly as typed. The parsed number is
+ * still reported on every valid keystroke, so totals keep updating live.
+ */
+function DecimalInput({
+  value,
+  onChange,
+  className,
+  placeholder,
+}: {
+  value: number;
+  onChange: (n: number) => void;
+  className?: string;
+  placeholder?: string;
+}) {
+  const [text, setText] = useState(String(value));
+  const [focused, setFocused] = useState(false);
+
+  useEffect(() => {
+    if (!focused) setText(String(value));
+  }, [value, focused]);
+
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      placeholder={placeholder}
+      value={text}
+      onFocus={() => setFocused(true)}
+      onChange={(e) => {
+        const raw = e.target.value;
+        // Only allow digits with at most one decimal point while typing.
+        if (!/^\d*\.?\d*$/.test(raw)) return;
+        setText(raw);
+        const parsed = parseFloat(raw);
+        if (!isNaN(parsed)) onChange(parsed);
+      }}
+      onBlur={() => {
+        setFocused(false);
+        const parsed = parseFloat(text);
+        if (text === '' || isNaN(parsed)) {
+          onChange(0);
+        } else {
+          setText(String(parsed));
+          onChange(parsed);
+        }
+      }}
+      className={className}
+    />
+  );
+}
+
 type CartItem = BillItem & { product_id: string };
 
 export default function Billing() {
@@ -106,14 +170,16 @@ export default function Billing() {
   };
 
   const setQty = (productId: string, qty: number) => {
-    if (qty <= 0) {
-      setCart((prev) => prev.filter((c) => c.product_id !== productId));
-      return;
-    }
+    // Called on every keystroke while typing (not from the +/- buttons).
+    // Unlike updateQty, this must NOT remove the row when the typed value
+    // is momentarily 0 — that would delete the item before the user can
+    // finish typing something like "0.25" (grocery items sold by
+    // fraction of a kg: 100g = 0.100, 250g = 0.250, etc).
+    const safeQty = qty < 0 ? 0 : qty;
     setCart((prev) =>
       prev.map((c) =>
         c.product_id === productId
-          ? { ...c, quantity: qty, total_price: qty * c.unit_price }
+          ? { ...c, quantity: safeQty, total_price: safeQty * c.unit_price }
           : c,
       ),
     );
@@ -431,13 +497,9 @@ export default function Billing() {
                         </p>
                         <div className="flex items-center gap-1 mt-0.5">
                           <span className="text-[10px] text-slate-400">₹</span>
-                          <input
-                            type="number"
-                            step="0.01"
+                          <DecimalInput
                             value={c.unit_price}
-                            onChange={(e) =>
-                              setDraftUnitPrice(c.product_id, parseFloat(e.target.value) || 0)
-                            }
+                            onChange={(n) => setDraftUnitPrice(c.product_id, n)}
                             className="w-16 text-xs font-medium border border-slate-200 rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-emerald-500 bg-white"
                           />
                           <span className="text-[10px] text-slate-400">/each</span>
@@ -450,19 +512,9 @@ export default function Billing() {
                         >
                           <Minus size={12} />
                         </button>
-                        <input
-                          type="number"
-                          step="0.01"
-                          min="0"
+                        <DecimalInput
                           value={c.quantity}
-                          onChange={(e) =>
-                            setDraftQty(c.product_id, parseFloat(e.target.value) || 0)
-                          }
-                          onBlur={(e) => {
-                            if (e.target.value === '' || isNaN(parseFloat(e.target.value))) {
-                              setDraftQty(c.product_id, c.quantity);
-                            }
-                          }}
+                          onChange={(n) => setDraftQty(c.product_id, n)}
                           className="w-14 text-center text-sm font-semibold border border-slate-200 rounded py-0.5 focus:outline-none focus:ring-1 focus:ring-emerald-500"
                         />
                         <button
@@ -738,13 +790,9 @@ export default function Billing() {
                         </p>
                         <div className="flex items-center gap-1 mt-0.5">
                           <span className="text-[10px] text-slate-400">₹</span>
-                          <input
-                            type="number"
-                            step="0.01"
+                          <DecimalInput
                             value={c.unit_price}
-                            onChange={(e) =>
-                              setUnitPrice(c.product_id, parseFloat(e.target.value) || 0)
-                            }
+                            onChange={(n) => setUnitPrice(c.product_id, n)}
                             className="w-16 text-xs font-medium border border-slate-200 rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-emerald-500 bg-white"
                           />
                           <span className="text-[10px] text-slate-400">/each</span>
@@ -757,20 +805,9 @@ export default function Billing() {
                         >
                           <Minus size={12} />
                         </button>
-                        <input
-                          type="number"
-                          step="0.01"
-                          min="0"
+                        <DecimalInput
                           value={c.quantity}
-                          onChange={(e) =>
-                            setQty(c.product_id, parseFloat(e.target.value) || 0)
-                          }
-                          onBlur={(e) => {
-                            // If left blank or invalid on blur, snap back to a safe value
-                            if (e.target.value === '' || isNaN(parseFloat(e.target.value))) {
-                              setQty(c.product_id, c.quantity);
-                            }
-                          }}
+                          onChange={(n) => setQty(c.product_id, n)}
                           className="w-14 text-center text-sm font-semibold border border-slate-200 rounded py-0.5 focus:outline-none focus:ring-1 focus:ring-emerald-500"
                         />
                         <button
