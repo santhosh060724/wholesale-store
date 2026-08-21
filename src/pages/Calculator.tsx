@@ -13,6 +13,7 @@ import {
   User,
   Printer,
   Check,
+  Delete,
 } from 'lucide-react';
 
 type CalcItem = {
@@ -110,13 +111,6 @@ export default function Calculator() {
       ...parsed.map((p) => ({ id: crypto.randomUUID(), price: p.price, qty: p.qty })),
     ]);
     setEntryText('');
-  };
-
-  const handleEntryKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      addEntry();
-    }
   };
 
   const removeItem = (id: string) => {
@@ -226,34 +220,127 @@ export default function Calculator() {
         </p>
       </div>
 
-      {/* Quick entry */}
+      {/* Full virtual calculator */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 mb-5">
-        <div className="flex gap-2">
+        <div className="mb-3">
+          <label className="block text-sm font-medium text-slate-600 mb-1">
+            Enter Price / Quantity
+          </label>
+
           <input
             type="text"
-            inputMode="decimal"
+            inputMode="none"
+            readOnly
             autoFocus
             value={entryText}
-            onChange={(e) => {
-              setEntryText(e.target.value);
-              if (entryError) setEntryError('');
-            }}
-            onKeyDown={handleEntryKeyDown}
-            placeholder="e.g. 50 or 50*2"
-            className="flex-1 px-4 py-3 border border-slate-200 rounded-lg text-lg font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500/40 focus:border-emerald-500"
+            placeholder="0"
+            className="w-full px-4 py-3 border border-slate-200 rounded-lg text-right text-2xl font-bold text-slate-800 bg-slate-50 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 focus:border-emerald-500"
           />
-          <button
-            onClick={addEntry}
-            className="inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-3 rounded-lg font-semibold transition-colors shadow-sm"
-          >
-            <Plus size={20} />
-            Add
-          </button>
+
+          {entryError && (
+            <p className="text-sm text-red-600 mt-2">
+              {entryError}
+            </p>
+          )}
         </div>
-        {entryError && <p className="text-sm text-red-600 mt-2">{entryError}</p>}
+
+        <div className="grid grid-cols-4 gap-2">
+          {[
+            '7', '8', '9', '×',
+            '4', '5', '6', 'C',
+            '1', '2', '3', '⌫',
+            '0', '.', '00', '+',
+          ].map((key) => {
+            const isOperator = key === '×' || key === '+';
+            const isAction = key === 'C' || key === '⌫';
+
+            return (
+              <button
+                key={key}
+                type="button"
+                onClick={() => {
+                  setEntryError('');
+
+                  if (key === 'C') {
+                    setEntryText('');
+                    return;
+                  }
+
+                  if (key === '⌫') {
+                    setEntryText((prev) => prev.slice(0, -1));
+                    return;
+                  }
+
+                  if (key === '+') {
+                    // Plus is not a valid item separator, so keep it
+                    // unavailable as an accidental bill entry.
+                    return;
+                  }
+
+                  setEntryText((prev) => {
+                    // Only allow one multiplication symbol.
+                    if (key === '×' && /[*xX×]/.test(prev)) {
+                      return prev;
+                    }
+
+                    // Prevent a multiplication symbol as the first character.
+                    if (key === '×' && !prev.trim()) {
+                      return prev;
+                    }
+
+                    // Prevent multiple decimal points in the same
+                    // price or quantity portion.
+                    if (key === '.') {
+                      const parts = prev.split(/[×*xX]/);
+                      const currentPart = parts[parts.length - 1];
+
+                      if (currentPart.includes('.')) {
+                        return prev;
+                      }
+
+                      // Allow ".25" as requested.
+                      if (!currentPart) {
+                        return `${prev}.`;
+                      }
+                    }
+
+                    return `${prev}${key}`;
+                  });
+                }}
+                className={`h-14 sm:h-16 rounded-lg text-xl sm:text-2xl font-bold transition-colors active:scale-95 ${
+                  key === '×'
+                    ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
+                    : key === 'C'
+                      ? 'bg-red-50 text-red-600 hover:bg-red-100'
+                      : key === '⌫'
+                        ? 'bg-amber-50 text-amber-700 hover:bg-amber-100'
+                        : isOperator
+                          ? 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                          : 'bg-slate-50 text-slate-800 hover:bg-slate-100'
+                }`}
+              >
+                {key === '⌫' ? <Delete size={22} className="mx-auto" /> : key}
+              </button>
+            );
+          })}
+        </div>
+
+        <button
+          type="button"
+          onClick={addEntry}
+          className="w-full mt-3 inline-flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white py-3.5 rounded-lg font-semibold text-lg transition-colors shadow-sm"
+        >
+          <Plus size={20} />
+          Add Item
+        </button>
+
+        <p className="text-xs text-slate-400 text-center mt-2">
+          Examples: 50 = quantity 1 &nbsp;•&nbsp; 50 × 2 &nbsp;•&nbsp; 50 × .25
+        </p>
       </div>
 
       {/* Items list */}
+
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm mb-5">
         <div className="flex items-center justify-between p-4 border-b border-slate-100">
           <h2 className="font-bold text-slate-800 flex items-center gap-2">
