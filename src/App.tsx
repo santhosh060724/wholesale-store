@@ -1,16 +1,18 @@
 import { useState } from 'react';
-import { LayoutDashboard, ShoppingCart, Package, Receipt, Store, Users } from 'lucide-react';
+import { LayoutDashboard, ShoppingCart, Package, Receipt, Store, Users, Calculator as CalculatorIcon } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
 import Billing from './pages/Billing';
 import Products from './pages/Products';
 import History from './pages/History';
 import StaffPage from './pages/Staff';
+import CalculatorPage from './pages/Calculator';
 
-type Tab = 'dashboard' | 'billing' | 'products' | 'history' | 'staff';
+type Tab = 'dashboard' | 'billing' | 'products' | 'history' | 'staff' | 'calculator';
 
 const tabs: { id: Tab; label: string; icon: typeof LayoutDashboard }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'billing', label: 'New Bill', icon: ShoppingCart },
+  { id: 'calculator', label: 'Calculator', icon: CalculatorIcon },
   { id: 'products', label: 'Products', icon: Package },
   { id: 'history', label: 'History', icon: Receipt },
   { id: 'staff', label: 'Staff', icon: Users },
@@ -88,6 +90,7 @@ function App() {
       <main className="flex-1 overflow-y-auto pb-16 lg:pb-0">
         {active === 'dashboard' && <Dashboard />}
         {active === 'billing' && <Billing />}
+        {active === 'calculator' && <CalculatorPage />}
         {active === 'products' && <Products />}
         {active === 'history' && <History />}
         {active === 'staff' && <StaffPage />}

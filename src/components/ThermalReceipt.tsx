@@ -319,7 +319,6 @@ export default function ThermalReceipt({
           <div key={i} className="flex text-[11px] py-0.5">
             <span className="flex-1 truncate pr-1">
               {item.product_name}
-              <span className="text-[10px] text-gray-600"> ({item.product_code})</span>
             </span>
             <span className="w-10 text-center">{item.quantity}</span>
             <span className="w-16 text-right">{item.unit_price.toFixed(2)}</span>
