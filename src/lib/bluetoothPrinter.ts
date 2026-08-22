@@ -73,14 +73,35 @@ export type BluetoothPrinterSettings = {
   paperWidth: PaperWidth;
 };
 
+// A BluetoothServiceUUID/characteristic UUID the Web Bluetooth API will
+// actually accept is a full 128-bit UUID in this exact dashed-hex shape
+// (e.g. '0000ffe0-0000-1000-8000-00805f9b34fb'). Anything else —
+// mistyped, pasted from the wrong field, garbage — makes
+// bluetooth.requestDevice() throw synchronously with "Invalid Service
+// name", before the device picker even opens. That single bad value can
+// silently break *every* connect/print attempt from then on, since it's
+// read from localStorage on every call. So: validate on the way in
+// (saveBluetoothPrinterSettings) AND on the way out (getBluetoothPrinterSettings) —
+// a previously-saved bad value should stop being used as soon as this
+// check exists, without the user having to find Printer Settings again.
+const UUID_128_BIT_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function isValidBluetoothUuid(value: string): boolean {
+  return UUID_128_BIT_RE.test(value.trim());
+}
+
+function sanitizeUuidField(value: unknown): string {
+  return typeof value === 'string' && isValidBluetoothUuid(value) ? value.trim().toLowerCase() : '';
+}
+
 export function getBluetoothPrinterSettings(): BluetoothPrinterSettings {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
       return {
-        serviceUuid: parsed.serviceUuid || '',
-        characteristicUuid: parsed.characteristicUuid || '',
+        serviceUuid: sanitizeUuidField(parsed.serviceUuid),
+        characteristicUuid: sanitizeUuidField(parsed.characteristicUuid),
         paperWidth: parsed.paperWidth === '58mm' ? '58mm' : '80mm',
       };
     }
@@ -90,8 +111,19 @@ export function getBluetoothPrinterSettings(): BluetoothPrinterSettings {
   return { serviceUuid: '', characteristicUuid: '', paperWidth: '80mm' };
 }
 
+/**
+ * Saves printer settings. Invalid Service/Characteristic UUIDs are dropped
+ * (treated as "leave blank for auto-detect") rather than stored as-is —
+ * see the note above UUID_128_BIT_RE for why a bad value here can brick
+ * every future connect attempt.
+ */
 export function saveBluetoothPrinterSettings(settings: BluetoothPrinterSettings): void {
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  const clean: BluetoothPrinterSettings = {
+    serviceUuid: sanitizeUuidField(settings.serviceUuid),
+    characteristicUuid: sanitizeUuidField(settings.characteristicUuid),
+    paperWidth: settings.paperWidth === '58mm' ? '58mm' : '80mm',
+  };
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(clean));
 }
 
 /** Characters-per-line to hand to buildEscPosReceipt for the saved paper width. */
