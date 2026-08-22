@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Bill, BillItem } from '../lib/types';
 import { formatCurrency, formatDate } from '../lib/utils';
 import { buildEscPosReceipt, type StoreInfo } from '../lib/escpos';
@@ -11,6 +11,11 @@ import {
   isIOS,
   getBluetoothPrinterSettings,
   saveBluetoothPrinterSettings,
+  getCharsPerLine,
+  tryAutoReconnect,
+  hasRememberedPrinter,
+  forgetRememberedPrinter,
+  type PaperWidth,
 } from '../lib/bluetoothPrinter';
 import { Printer, Bluetooth, Check, AlertCircle, Loader2, Settings, X } from 'lucide-react';
 
@@ -43,8 +48,36 @@ export default function ThermalReceipt({
   const [onIOS] = useState(() => isIOS());
   const [showBtSettings, setShowBtSettings] = useState(false);
   const [btSettings, setBtSettings] = useState(getBluetoothPrinterSettings());
+  const [autoReconnectTried, setAutoReconnectTried] = useState(false);
+  const attemptedRef = useRef(false);
 
   const store: StoreInfo = { storeName, storeAddress, storePhone };
+
+  // Try to silently reconnect to the last-used printer as soon as the
+  // receipt is shown, so "Print to Thermal Printer" usually just works
+  // without a manual "Connect" tap first. Fails silently — this is a
+  // background nicety, not a user-initiated action, so no error is shown
+  // if there's no remembered printer or it's unreachable right now.
+  useEffect(() => {
+    if (attemptedRef.current) return;
+    attemptedRef.current = true;
+    if (!btSupported || !hasRememberedPrinter()) {
+      setAutoReconnectTried(true);
+      return;
+    }
+    setPrinterStatus('connecting');
+    tryAutoReconnect()
+      .then((device) => {
+        if (device) {
+          setPrinterStatus('connected');
+          setPrinterMsg(`Auto-connected to ${device.name}`);
+        } else {
+          setPrinterStatus('idle');
+        }
+      })
+      .finally(() => setAutoReconnectTried(true));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleBrowserPrint = () => {
     window.print();
@@ -71,7 +104,7 @@ export default function ThermalReceipt({
     setPrinterStatus('printing');
     setPrinterMsg('');
     try {
-      const data = buildEscPosReceipt(bill, items, store);
+      const data = buildEscPosReceipt(bill, items, store, getCharsPerLine());
       await printViaBluetooth(data);
       setPrinterStatus('done');
       setPrinterMsg('Receipt sent to printer');
@@ -87,6 +120,11 @@ export default function ThermalReceipt({
     setShowBtSettings(false);
   };
 
+  const handleForgetPrinter = () => {
+    forgetRememberedPrinter();
+    setShowBtSettings(false);
+  };
+
   const statusColor = {
     idle: 'text-slate-400',
     connecting: 'text-amber-500',
@@ -97,6 +135,11 @@ export default function ThermalReceipt({
   }[printerStatus];
 
   const isConnected = printerStatus === 'connected' || printerStatus === 'printing' || printerStatus === 'done';
+  // While the silent auto-reconnect attempt is running, treat the
+  // "connecting" state as quiet (no spinner text) so a failed background
+  // attempt doesn't flash an alarming "Connecting..." the user never asked
+  // for. Once a user taps Connect manually, this no longer applies.
+  const showConnectingUI = printerStatus === 'connecting' && autoReconnectTried;
 
   return (
     <>
@@ -136,7 +179,7 @@ export default function ThermalReceipt({
                   disabled={printerStatus === 'connecting'}
                   className="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white px-4 py-2.5 rounded-lg font-medium transition-colors shadow-sm"
                 >
-                  {printerStatus === 'connecting' ? (
+                  {showConnectingUI ? (
                     <Loader2 size={18} className="animate-spin" />
                   ) : (
                     <Bluetooth size={18} />
@@ -194,11 +237,11 @@ export default function ThermalReceipt({
           </div>
         )}
 
-        {btSupported && printerStatus === 'idle' && (
+        {btSupported && printerStatus === 'idle' && autoReconnectTried && (
           <p className="text-xs text-slate-400">
-            Tip: Tap "Connect Bluetooth Printer" first (pick your printer from the browser's
-            pairing popup), then "Print to Thermal Printer". If nothing prints, open Printer
-            Settings (gear icon) and check your printer's UUIDs.
+            {hasRememberedPrinter()
+              ? "Couldn't reach your saved printer (off or out of range) — tap \"Connect Bluetooth Printer\" to pick it again."
+              : 'Tip: Tap "Connect Bluetooth Printer" once and pick your printer — after that, it should auto-connect on future bills without asking again.'}
           </p>
         )}
       </div>
@@ -216,11 +259,37 @@ export default function ThermalReceipt({
                 <X size={20} />
               </button>
             </div>
-            <p className="text-xs text-slate-500 mb-4">
-              Leave both fields blank to auto-detect (works for most budget Bluetooth ESC/POS
-              printers). If printing connects but nothing comes out, check your printer's manual
-              for its exact Service/Characteristic UUIDs and enter them here — this only needs to
-              be set once.
+
+            <div className="mb-4">
+              <label className="block text-xs font-medium text-slate-600 mb-1.5">
+                Paper Width
+              </label>
+              <div className="flex rounded-lg border border-slate-200 overflow-hidden">
+                {(['58mm', '80mm'] as PaperWidth[]).map((w) => (
+                  <button
+                    key={w}
+                    onClick={() => setBtSettings({ ...btSettings, paperWidth: w })}
+                    className={`flex-1 py-2 text-sm font-medium transition-colors ${
+                      btSettings.paperWidth === w
+                        ? 'bg-emerald-600 text-white'
+                        : 'bg-white text-slate-500 hover:bg-slate-50'
+                    }`}
+                  >
+                    {w}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[11px] text-slate-400 mt-1">
+                If your receipt only fills half the paper (blank space on the right), your
+                printer is probably 80mm — pick that. Most standard shop receipt printers are
+                80mm.
+              </p>
+            </div>
+
+            <p className="text-xs text-slate-500 mb-3">
+              Leave both fields below blank to auto-detect (works for most budget Bluetooth
+              ESC/POS printers). If printing connects but nothing comes out, check your printer's
+              manual for its exact Service/Characteristic UUIDs and enter them here.
             </p>
             <div className="space-y-3">
               <div>
@@ -248,7 +317,17 @@ export default function ThermalReceipt({
                 />
               </div>
             </div>
-            <div className="flex gap-3 mt-6">
+
+            {hasRememberedPrinter() && (
+              <button
+                onClick={handleForgetPrinter}
+                className="w-full mt-4 text-xs text-red-500 hover:text-red-700 font-medium text-center"
+              >
+                Forget saved printer (switching to a different one)
+              </button>
+            )}
+
+            <div className="flex gap-3 mt-4">
               <button
                 onClick={() => setShowBtSettings(false)}
                 className="flex-1 px-4 py-2.5 border border-slate-200 text-slate-600 rounded-lg font-medium hover:bg-slate-50 transition-colors"
@@ -361,20 +440,7 @@ export default function ThermalReceipt({
         <div className="text-center text-[11px]">
           <p className="font-bold">Thank You!</p>
           <p>Visit Again</p>
-          {/* <p className="mt-1 text-[10px]"></p> */}
         </div>
-
-        {/* Barcode-style visual */}
-        {/* <div className="flex justify-center mt-2 gap-[1px]">
-          {Array.from({ length: 40 }).map((_, i) => (
-            <div
-              key={i}
-              className="bg-black"
-              style={{ width: i % 3 === 0 ? '2px' : '1px', height: '30px' }}
-            />
-          ))}
-        </div>
-        <div className="text-center text-[9px] mt-1">{bill.bill_number}</div> */}
       </div>
     </>
   );

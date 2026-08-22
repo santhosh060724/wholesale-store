@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import type { Product, Bill, BillItem } from '../lib/types';
 import { formatCurrency, generateBillNumber } from '../lib/utils';
@@ -17,6 +17,7 @@ import {
   Banknote,
   Percent,
   IndianRupee,
+  ChevronDown,
 } from 'lucide-react';
 
 /**
@@ -90,6 +91,7 @@ export default function Billing() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [cart, setCart] = useState<CartItem[]>([]);
+  const cartSectionRef = useRef<HTMLDivElement>(null);
   const [customerName, setCustomerName] = useState('');
   const [paymentMethod, setPaymentMethod] = useState('Cash');
   const [discountType, setDiscountType] = useState<'percent' | 'amount'>('percent');
@@ -750,7 +752,7 @@ export default function Billing() {
         </div>
 
         {/* Cart sidebar */}
-        <div className="lg:sticky lg:top-4 lg:self-start">
+        <div ref={cartSectionRef} className="lg:sticky lg:top-4 lg:self-start scroll-mt-4">
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm">
             <div className="flex items-center justify-between p-4 border-b border-slate-100">
               <h2 className="font-bold text-slate-800 flex items-center gap-2">
@@ -908,6 +910,18 @@ export default function Billing() {
           </div>
         </div>
       </div>
+
+      {/* Mobile-only: jump straight to the cart instead of scrolling past
+          the whole product grid. */}
+      {cart.length > 0 && (
+        <button
+          onClick={() => cartSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+          className="lg:hidden fixed bottom-20 right-4 z-30 w-12 h-12 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white shadow-lg flex items-center justify-center"
+          aria-label="Scroll to cart"
+        >
+          <ChevronDown size={22} />
+        </button>
+      )}
 
       {addItemsModal}
 

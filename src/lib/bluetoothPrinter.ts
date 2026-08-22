@@ -3,7 +3,7 @@
  * (navigator.bluetooth) — built into Chrome/Edge on desktop and Chrome on
  * Android. No native app, plugin, or USB cable required.
  *
- * Platform support (as of 2026, set by the browser vendors, not this code):
+ * Platform support (set by the browser vendors, not this code):
  *   - Windows / macOS / Linux / ChromeOS: Chrome, Edge, Opera  -> supported
  *   - Android: Chrome, Edge, Samsung Internet, Opera            -> supported
  *   - iOS / iPadOS: Safari AND Chrome-on-iOS (WebKit-based)     -> NOT supported
@@ -22,6 +22,36 @@
  *      and pick the first one that supports writing.
  *   3. Let advanced users override with an exact Service/Characteristic UUID
  *      from Printer Settings, for the rare printer that doesn't match.
+ *
+ * --- "GATT operation already in progress" ---
+ * Chrome throws this if two GATT calls (connect/read/write) on the same
+ * device overlap in time — e.g. a background auto-reconnect attempt racing
+ * a user's manual tap, or a double-tap firing two connects before the UI
+ * disables the button. Every GATT-touching call in this file is routed
+ * through withGattLock() below, which serializes them so only one is ever
+ * in flight at a time, no matter what triggered it.
+ *
+ * --- Auto-reconnect without a picker every time ---
+ * Once the browser has granted permission for a device (via a manual
+ * requestDevice() pairing), navigator.bluetooth.getDevices() can list it on
+ * later visits, and device.gatt.connect() can be called directly on it —
+ * no picker dialog needed — as long as the printer is on and in range. We
+ * remember the last-connected device's id and use this to auto-reconnect
+ * silently when the receipt screen opens.
+ *
+ * --- Hangs (stuck "Printing...", stuck on connect) ---
+ * Real BLE hardware sometimes accepts a request and then never responds at
+ * all — no success, no error, nothing. A bare `await
+ * characteristic.writeValue(...)` (or `await device.gatt.connect()`) on
+ * that kind of hardware never settles, which — combined with the GATT lock
+ * above — means every operation after it is stuck too, forever, until the
+ * page is reloaded. To make that impossible, every step that talks to the
+ * device (connect, service/characteristic discovery, each chunk write) is
+ * wrapped in withTimeout(), which always settles one way or another. On a
+ * timeout, forceReset() tears the connection down instead of leaving the
+ * app believing it's still connected to a printer that's gone silent — so
+ * the lock is guaranteed to free up and the next print attempt starts
+ * clean rather than inheriting a wedged connection.
  */
 
 const COMMON_PRINTER_SERVICE_UUIDS = [
@@ -33,10 +63,14 @@ const COMMON_PRINTER_SERVICE_UUIDS = [
 ];
 
 const SETTINGS_KEY = 'bt_printer_settings_v1';
+const LAST_DEVICE_KEY = 'bt_last_device_v1';
+
+export type PaperWidth = '58mm' | '80mm';
 
 export type BluetoothPrinterSettings = {
   serviceUuid: string;
   characteristicUuid: string;
+  paperWidth: PaperWidth;
 };
 
 export function getBluetoothPrinterSettings(): BluetoothPrinterSettings {
@@ -44,16 +78,25 @@ export function getBluetoothPrinterSettings(): BluetoothPrinterSettings {
     const raw = localStorage.getItem(SETTINGS_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (parsed.serviceUuid && parsed.characteristicUuid) return parsed;
+      return {
+        serviceUuid: parsed.serviceUuid || '',
+        characteristicUuid: parsed.characteristicUuid || '',
+        paperWidth: parsed.paperWidth === '58mm' ? '58mm' : '80mm',
+      };
     }
   } catch {
-    // fall through to empty defaults (means: auto-detect)
+    // fall through to defaults
   }
-  return { serviceUuid: '', characteristicUuid: '' };
+  return { serviceUuid: '', characteristicUuid: '', paperWidth: '80mm' };
 }
 
 export function saveBluetoothPrinterSettings(settings: BluetoothPrinterSettings): void {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+}
+
+/** Characters-per-line to hand to buildEscPosReceipt for the saved paper width. */
+export function getCharsPerLine(): number {
+  return getBluetoothPrinterSettings().paperWidth === '58mm' ? 32 : 48;
 }
 
 export function isWebBluetoothSupported(): boolean {
@@ -67,6 +110,82 @@ export function isIOS(): boolean {
   return /iPad|iPhone|iPod/.test(ua) || (ua.includes('Macintosh') && navigator.maxTouchPoints > 1);
 }
 
+// --- Remembered device (for silent auto-reconnect) ---
+
+function getRememberedDeviceId(): string | null {
+  try {
+    const raw = localStorage.getItem(LAST_DEVICE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw).id || null;
+  } catch {
+    return null;
+  }
+}
+
+function rememberDevice(device: any): void {
+  try {
+    localStorage.setItem(LAST_DEVICE_KEY, JSON.stringify({ id: device.id, name: device.name || '' }));
+  } catch {
+    // ignore storage errors (e.g. private browsing)
+  }
+}
+
+export function forgetRememberedPrinter(): void {
+  localStorage.removeItem(LAST_DEVICE_KEY);
+}
+
+export function hasRememberedPrinter(): boolean {
+  return !!getRememberedDeviceId();
+}
+
+// --- GATT operation lock ---
+// Every function below that touches device.gatt (connect, discover
+// services/characteristics, or write) goes through this so calls never
+// overlap, which is what triggers Chrome's "GATT operation already in
+// progress" error. This only works as a *lock* (rather than a permanent
+// jam) because every operation queued through it is timeout-bounded below —
+// see withTimeout().
+let gattChain: Promise<any> = Promise.resolve();
+function withGattLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = gattChain.then(fn, fn);
+  // Keep the chain alive even if this operation fails, so the next one
+  // still gets its turn instead of being stuck behind a rejected promise.
+  gattChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+// Timeouts for each stage of talking to the printer. Generous enough for a
+// slow budget printer, short enough that a hung operation fails fast
+// instead of leaving the UI spinning indefinitely.
+const CONNECT_TIMEOUT_MS = 15000;
+const DISCOVERY_TIMEOUT_MS = 10000;
+const WRITE_TIMEOUT_MS = 7000;
+const AUTO_RECONNECT_TIMEOUT_MS = 8000;
+
+/**
+ * Races `promise` against a timer so the result *always* settles within
+ * `ms` — even if `promise` itself never calls back, which is exactly what
+ * real BLE hardware sometimes does on a connect or a write.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
+
 type ConnectedState = {
   device: any;
   characteristic: any;
@@ -75,6 +194,27 @@ type ConnectedState = {
 };
 
 let connected: ConnectedState | null = null;
+
+/**
+ * Tears down the current connection and clears local state. Called any
+ * time a GATT operation times out or otherwise fails in a way that leaves
+ * the connection in an unknown state, so the app never gets stuck
+ * believing it's still connected to a printer that stopped responding.
+ */
+function forceReset(reason: string): void {
+  const device = connected?.device;
+  connected = null;
+  if (device?.gatt?.connected) {
+    try {
+      device.gatt.disconnect();
+    } catch {
+      // best-effort; nothing more we can do
+    }
+  }
+  if (typeof console !== 'undefined') {
+    console.warn(`[bluetoothPrinter] connection reset: ${reason}`);
+  }
+}
 
 async function findWritableCharacteristic(server: any): Promise<{ characteristic: any; writeWithoutResponse: boolean }> {
   const { serviceUuid, characteristicUuid } = getBluetoothPrinterSettings();
@@ -116,6 +256,49 @@ async function findWritableCharacteristic(server: any): Promise<{ characteristic
   );
 }
 
+/** Shared finish-up logic for both manual pairing and silent auto-reconnect. */
+async function finishConnectingToDevice(device: any): Promise<{ name: string }> {
+  // Skip a redundant connect() call if we're somehow already connected to
+  // this exact device — calling connect() again while connected is one of
+  // the known ways to trigger "GATT operation already in progress".
+  let server: any;
+  try {
+    server = device.gatt.connected
+      ? device.gatt
+      : await withTimeout(device.gatt.connect(), CONNECT_TIMEOUT_MS, 'The printer took too long to connect. Turn it off and on, then try again.');
+  } catch (err) {
+    forceReset(`gatt.connect() did not complete: ${(err as any)?.message || err}`);
+    throw err;
+  }
+
+  let characteristic: any;
+  let writeWithoutResponse: boolean;
+  try {
+    ({ characteristic, writeWithoutResponse } = await withTimeout(
+      findWritableCharacteristic(server),
+      DISCOVERY_TIMEOUT_MS,
+      'Connected, but the printer stopped responding while setting up. Try again.',
+    ));
+  } catch (err) {
+    forceReset(`characteristic discovery did not complete: ${(err as any)?.message || err}`);
+    throw err;
+  }
+
+  device.addEventListener('gattserverdisconnected', () => {
+    connected = null;
+  });
+
+  connected = {
+    device,
+    characteristic,
+    writeWithoutResponse,
+    name: device.name || 'Bluetooth Printer',
+  };
+  rememberDevice(device);
+
+  return { name: connected.name };
+}
+
 export async function connectBluetoothPrinter(): Promise<{ name: string }> {
   if (!isWebBluetoothSupported()) {
     if (isIOS()) {
@@ -135,26 +318,51 @@ export async function connectBluetoothPrinter(): Promise<{ name: string }> {
   }
 
   const bluetooth = (navigator as any).bluetooth;
+  // requestDevice() shows the picker — must stay directly in the click
+  // handler's call chain (it is, since this whole function is only called
+  // from a button's onClick). Not wrapped in withGattLock or a timeout:
+  // it's paced by the user picking a device or cancelling, not a "hang",
+  // and the browser guarantees it settles as soon as the user acts.
   const device = await bluetooth.requestDevice({
     acceptAllDevices: true,
     optionalServices,
   });
 
-  const server = await device.gatt.connect();
-  const { characteristic, writeWithoutResponse } = await findWritableCharacteristic(server);
+  return withGattLock(() => finishConnectingToDevice(device));
+}
 
-  device.addEventListener('gattserverdisconnected', () => {
-    connected = null;
-  });
+/**
+ * Tries to silently reconnect to the last printer this site was granted
+ * permission for — no picker dialog. Returns null (never throws) if there's
+ * no remembered printer, the browser doesn't support getDevices(), or the
+ * printer isn't currently reachable (off / out of range) — all of these
+ * are normal, expected outcomes for a background attempt, not errors.
+ */
+export async function tryAutoReconnect(): Promise<{ name: string } | null> {
+  if (!isWebBluetoothSupported()) return null;
+  const bluetooth = (navigator as any).bluetooth;
+  if (typeof bluetooth.getDevices !== 'function') return null;
 
-  connected = {
-    device,
-    characteristic,
-    writeWithoutResponse,
-    name: device.name || 'Bluetooth Printer',
-  };
+  const rememberedId = getRememberedDeviceId();
+  if (!rememberedId) return null;
 
-  return { name: connected.name };
+  try {
+    const devices: any[] = await bluetooth.getDevices();
+    const device = devices.find((d) => d.id === rememberedId);
+    if (!device) return null;
+
+    return await withGattLock(() =>
+      withTimeout(
+        finishConnectingToDevice(device),
+        AUTO_RECONNECT_TIMEOUT_MS,
+        'Printer not reachable (off or out of range)',
+      ),
+    );
+  } catch {
+    // Printer off, out of range, or permission revoked — silently give up
+    // and let the user connect manually instead.
+    return null;
+  }
 }
 
 export async function printViaBluetooth(data: Uint8Array): Promise<void> {
@@ -162,37 +370,51 @@ export async function printViaBluetooth(data: Uint8Array): Promise<void> {
     throw new Error('Printer not connected. Connect first.');
   }
 
-  const { characteristic, writeWithoutResponse } = connected;
+  return withGattLock(async () => {
+    if (!connected) throw new Error('Printer not connected. Connect first.');
+    const { characteristic, writeWithoutResponse } = connected;
 
-  // BLE writes are capped by the negotiated MTU (commonly ~20-180 bytes on
-  // budget printers even when the browser supports larger packets). Split
-  // the receipt into small chunks and write them one at a time, with a
-  // short pause between writes, so long receipts don't overrun the
-  // printer's input buffer and get silently dropped or garbled.
-  const CHUNK_SIZE = 100;
-  for (let offset = 0; offset < data.length; offset += CHUNK_SIZE) {
-    const chunk = data.slice(offset, offset + CHUNK_SIZE);
-    if (writeWithoutResponse && characteristic.writeValueWithoutResponse) {
-      await characteristic.writeValueWithoutResponse(chunk);
-    } else if (characteristic.writeValueWithResponse) {
-      await characteristic.writeValueWithResponse(chunk);
-    } else {
-      await characteristic.writeValue(chunk);
+    // BLE writes are capped by the negotiated MTU (commonly ~20-180 bytes on
+    // budget printers even when the browser supports larger packets). Split
+    // the receipt into small chunks and write them one at a time, with a
+    // short pause between writes, so long receipts don't overrun the
+    // printer's input buffer and get silently dropped or garbled.
+    const CHUNK_SIZE = 100;
+    for (let offset = 0; offset < data.length; offset += CHUNK_SIZE) {
+      const chunk = data.slice(offset, offset + CHUNK_SIZE);
+      try {
+        if (writeWithoutResponse && characteristic.writeValueWithoutResponse) {
+          await withTimeout(
+            characteristic.writeValueWithoutResponse(chunk),
+            WRITE_TIMEOUT_MS,
+            'Sending data to printer timed out',
+          );
+        } else if (characteristic.writeValueWithResponse) {
+          await withTimeout(
+            characteristic.writeValueWithResponse(chunk),
+            WRITE_TIMEOUT_MS,
+            'Sending data to printer timed out',
+          );
+        } else {
+          await withTimeout(characteristic.writeValue(chunk), WRITE_TIMEOUT_MS, 'Sending data to printer timed out');
+        }
+      } catch (err) {
+        // A write that times out (or fails outright) leaves the connection
+        // in an unknown state — don't keep using it. Reset now so the next
+        // print attempt starts clean instead of hanging too.
+        forceReset(`a chunk write did not complete: ${(err as any)?.message || err}`);
+        throw new Error('The printer stopped responding mid-print and was disconnected. Reconnect and try again.');
+      }
+      // Small pause between chunks improves reliability on slower printers.
+      await new Promise((resolve) => setTimeout(resolve, 20));
     }
-    // Small pause between chunks improves reliability on slower printers.
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
+  });
 }
 
 export async function disconnectBluetoothPrinter(): Promise<void> {
-  if (connected?.device?.gatt?.connected) {
-    try {
-      connected.device.gatt.disconnect();
-    } catch {
-      // ignore
-    }
-  }
-  connected = null;
+  return withGattLock(async () => {
+    forceReset('manual disconnect');
+  });
 }
 
 export function isBluetoothPrinterConnected(): boolean {

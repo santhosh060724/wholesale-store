@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { Bill, BillItem } from '../lib/types';
 import { formatCurrency, generateBillNumber } from '../lib/utils';
 import ThermalReceipt from '../components/ThermalReceipt';
@@ -14,6 +14,7 @@ import {
   Printer,
   Check,
   Delete,
+  ChevronDown,
 } from 'lucide-react';
 
 type CalcItem = {
@@ -79,6 +80,7 @@ export default function Calculator() {
   const [entryText, setEntryText] = useState('');
   const [entryError, setEntryError] = useState('');
   const [items, setItems] = useState<CalcItem[]>([]);
+  const totalsSectionRef = useRef<HTMLDivElement>(null);
 
   const [customerName, setCustomerName] = useState('');
   const [paymentMethod, setPaymentMethod] = useState('Cash');
@@ -395,7 +397,7 @@ export default function Calculator() {
       </div>
 
       {items.length > 0 && (
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 space-y-4">
+        <div ref={totalsSectionRef} className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 space-y-4 scroll-mt-4">
           {/* Customer name (optional) */}
           <div>
             <label className="block text-sm font-medium text-slate-600 mb-1">
@@ -511,6 +513,18 @@ export default function Calculator() {
             Generate Receipt
           </button>
         </div>
+      )}
+
+      {/* Mobile-only: jump straight to totals/checkout instead of scrolling
+          past a long items list. */}
+      {items.length > 0 && (
+        <button
+          onClick={() => totalsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+          className="lg:hidden fixed bottom-20 right-4 z-30 w-12 h-12 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white shadow-lg flex items-center justify-center"
+          aria-label="Scroll to totals"
+        >
+          <ChevronDown size={22} />
+        </button>
       )}
     </div>
   );
