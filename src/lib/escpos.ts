@@ -21,6 +21,7 @@ const doubleWidthOff = () => cmd(GS, 0x21, 0x00);
 const textSize = (n: number) => cmd(GS, 0x21, n);
 
 const line = (s = '') => enc.encode(s + '\n');
+const raw = (s: string) => enc.encode(s);
 
 const pad = (s: string, len: number, align: 'left' | 'right' = 'left') => {
   const str = String(s);
@@ -45,17 +46,25 @@ export type StoreInfo = {
   storePhone: string;
 };
 
+// A small blank margin (in characters) reserved on each side of every
+// left-aligned line, so the receipt doesn't run text edge-to-edge on the
+// paper. Purely cosmetic spacing — has nothing to do with the paper-width
+// bug (that's charsPerLine below); this is what makes it look neat rather
+// than cramped once the width itself is already correct.
+const MARGIN = 2;
+
 /**
  * Builds the raw ESC/POS byte stream for a receipt.
  *
  * @param charsPerLine  How many monospace characters fit on one printed
- *   line. This depends on the physical paper width and the printer's
- *   default font — NOT something we can detect automatically over
+ *   line at the printer's normal/default font size. This depends on the
+ *   physical paper width — NOT something detectable automatically over
  *   Bluetooth, so it's passed in from the user's Printer Settings (see
  *   bluetoothPrinter.ts). Common values: 32 for 58mm paper, 48 for 80mm
- *   paper (both at the printer's normal/default font size). Getting this
- *   wrong is exactly what causes a big blank margin on one side of the
- *   printed receipt (too narrow) or wrapped/cut-off text (too wide).
+ *   paper. Getting this wrong is what causes a big blank margin on ONE
+ *   side only (too narrow) or wrapped/cut-off text (too wide) — different
+ *   from the deliberate small MARGIN above, which is applied evenly on
+ *   both sides once the width itself is correct.
  */
 export function buildEscPosReceipt(
   bill: Bill,
@@ -64,24 +73,29 @@ export function buildEscPosReceipt(
   charsPerLine = 48,
 ): Uint8Array {
   const W = charsPerLine;
+  const contentW = W - MARGIN * 2;
   const chunks: Uint8Array[] = [];
 
-  // Column widths for the item table, sized to the actual paper width so
-  // the whole line — not just the left third of it — gets used.
-  const wide = W >= 40;
+  // A left-aligned line, with the margin baked in on both sides.
+  const marginLine = (s = '') => line(' '.repeat(MARGIN) + pad(s, contentW) + ' '.repeat(MARGIN));
+
+  // Column widths for the item table, sized to contentW so the columns
+  // plus the margins together exactly fill the physical paper width.
+  const wide = contentW >= 36;
   const qtyW = wide ? 7 : 5;
   const priceW = wide ? 10 : 7;
   const amtW = wide ? 10 : 7;
-  const nameW = W - qtyW - priceW - amtW;
+  const nameW = contentW - qtyW - priceW - amtW;
 
-  // Two-column label/value layout for the header block, also sized to W.
-  const labelW = Math.floor(W / 2);
-  const valueW = W - labelW;
+  // Two-column label/value layout for the header block, also sized to
+  // contentW.
+  const labelW = Math.floor(contentW / 2);
+  const valueW = contentW - labelW;
 
   // Label/value layout for the totals block — value column stays a fixed
   // width wide enough for large currency amounts, label takes the rest.
   const totalsValueW = 12;
-  const totalsLabelW = W - totalsValueW;
+  const totalsLabelW = contentW - totalsValueW;
 
   chunks.push(init());
   chunks.push(alignCenter());
@@ -95,27 +109,27 @@ export function buildEscPosReceipt(
   chunks.push(feed(1));
 
   chunks.push(alignLeft());
-  chunks.push(line('-'.repeat(W)));
-  chunks.push(line(pad('Bill No:', labelW) + pad(bill.bill_number, valueW, 'right')));
-  chunks.push(line(pad('Date:', labelW) + pad(formatDate(bill.created_at), valueW, 'right')));
+  chunks.push(marginLine('-'.repeat(contentW)));
+  chunks.push(marginLine(pad('Bill No:', labelW) + pad(bill.bill_number, valueW, 'right')));
+  chunks.push(marginLine(pad('Date:', labelW) + pad(formatDate(bill.created_at), valueW, 'right')));
   if (bill.customer_name) {
-    chunks.push(line(pad('Customer:', labelW) + pad(bill.customer_name, valueW, 'right')));
+    chunks.push(marginLine(pad('Customer:', labelW) + pad(bill.customer_name, valueW, 'right')));
   }
-  chunks.push(line(pad('Payment:', labelW) + pad(bill.payment_method, valueW, 'right')));
-  chunks.push(line('-'.repeat(W)));
+  chunks.push(marginLine(pad('Payment:', labelW) + pad(bill.payment_method, valueW, 'right')));
+  chunks.push(marginLine('-'.repeat(contentW)));
 
   // Items header
   chunks.push(boldOn());
-  chunks.push(line(
+  chunks.push(marginLine(
     pad('Item', nameW) + pad('Qty', qtyW) + pad('Price', priceW, 'right') + pad('Amt', amtW, 'right'),
   ));
   chunks.push(boldOff());
-  chunks.push(line('='.repeat(W)));
+  chunks.push(marginLine('='.repeat(contentW)));
 
   // Items
   for (const item of items) {
     const name = item.product_name.length > nameW ? item.product_name.slice(0, nameW) : item.product_name;
-    chunks.push(line(
+    chunks.push(marginLine(
       pad(name, nameW) +
         pad(formatQty(item.quantity), qtyW) +
         pad(formatAmount(item.unit_price), priceW, 'right') +
@@ -123,26 +137,46 @@ export function buildEscPosReceipt(
     ));
   }
 
-  chunks.push(line('-'.repeat(W)));
+  chunks.push(marginLine('-'.repeat(contentW)));
 
   // Totals
-  chunks.push(line(pad('Total Items:', totalsLabelW) + pad(String(bill.total_items), totalsValueW, 'right')));
-  chunks.push(line(pad('Subtotal:', totalsLabelW) + pad(formatAmount(bill.subtotal), totalsValueW, 'right')));
+  chunks.push(marginLine(pad('Total Items:', totalsLabelW) + pad(String(bill.total_items), totalsValueW, 'right')));
+  chunks.push(marginLine(pad('Subtotal:', totalsLabelW) + pad(formatAmount(bill.subtotal), totalsValueW, 'right')));
   if (bill.discount_amount > 0) {
     const label =
       'Discount (' +
       (bill.discount_type === 'percent' ? `${bill.discount_value}%` : 'Flat') +
       '):';
-    chunks.push(line(pad(label, totalsLabelW) + pad('-' + formatAmount(bill.discount_amount), totalsValueW, 'right')));
+    chunks.push(marginLine(pad(label, totalsLabelW) + pad('-' + formatAmount(bill.discount_amount), totalsValueW, 'right')));
   }
-  chunks.push(line('='.repeat(W)));
+  chunks.push(marginLine('='.repeat(contentW)));
   chunks.push(boldOn());
+
+  // The TOTAL row prints at double width (GS ! 0x11) to make it stand out,
+  // but a double-width glyph takes up the physical space of TWO normal
+  // glyphs. marginLine()/pad() above always pad text out to the full
+  // contentW character count (44 on 80mm paper) for normal-width lines —
+  // reusing that here would mean printing contentW *double-width*
+  // characters, which needs 2x contentW worth of physical space and runs
+  // off the edge of the paper, wrapping the amount onto a stray extra
+  // line or letting the printer cut it off entirely. dblContentW is the
+  // number of double-width characters that actually fit in the same
+  // physical space contentW normal characters do.
+  const dblContentW = Math.max(10, Math.floor(contentW / 2));
+  const dblValueW = Math.max(7, Math.min(10, Math.ceil(dblContentW * 0.45)));
+  const dblLabelW = Math.max(4, dblContentW - dblValueW);
+
+  // Margin is written at normal width (before switching size) so it stays
+  // visually consistent with the rest of the receipt instead of also
+  // doubling in width.
+  chunks.push(raw(' '.repeat(MARGIN)));
   chunks.push(textSize(0x11));
-  chunks.push(line(pad('TOTAL:', labelW) + pad(formatAmount(bill.total), valueW, 'right')));
+  chunks.push(raw(pad('TOTAL:', dblLabelW) + pad(formatAmount(bill.total), dblValueW, 'right')));
   chunks.push(textSize(0x00));
+  chunks.push(line(' '.repeat(MARGIN)));
   chunks.push(boldOff());
 
-  chunks.push(line('-'.repeat(W)));
+  chunks.push(marginLine('-'.repeat(contentW)));
   chunks.push(alignCenter());
   chunks.push(boldOn());
   chunks.push(line('Thank You!'));

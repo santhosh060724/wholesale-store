@@ -15,6 +15,7 @@ import {
   tryAutoReconnect,
   hasRememberedPrinter,
   forgetRememberedPrinter,
+  supportsPersistentBluetoothPermissions,
   type PaperWidth,
 } from '../lib/bluetoothPrinter';
 import { Printer, Bluetooth, Check, AlertCircle, Loader2, Settings, X } from 'lucide-react';
@@ -102,7 +103,7 @@ export default function ThermalReceipt({
       if (!isBluetoothPrinterConnected()) return;
     }
     setPrinterStatus('printing');
-    setPrinterMsg('');
+    setPrinterMsg('Printing receipt...');
     try {
       const data = buildEscPosReceipt(bill, items, store, getCharsPerLine());
       await printViaBluetooth(data);
@@ -150,13 +151,13 @@ export default function ThermalReceipt({
           #thermal-receipt {
             position: absolute !important;
             left: 0; top: 0;
-            width: 80mm;
+            width: ${btSettings.paperWidth};
             margin: 0;
             box-shadow: none !important;
             border: none !important;
             padding: 4mm !important;
           }
-          @page { size: 80mm auto; margin: 0; }
+          @page { size: ${btSettings.paperWidth} auto; margin: 0; }
         }
       `}</style>
 
@@ -239,9 +240,11 @@ export default function ThermalReceipt({
 
         {btSupported && printerStatus === 'idle' && autoReconnectTried && (
           <p className="text-xs text-slate-400">
-            {hasRememberedPrinter()
-              ? "Couldn't reach your saved printer (off or out of range) — tap \"Connect Bluetooth Printer\" to pick it again."
-              : 'Tip: Tap "Connect Bluetooth Printer" once and pick your printer — after that, it should auto-connect on future bills without asking again.'}
+            {!supportsPersistentBluetoothPermissions()
+              ? "Your browser doesn't support remembering the printer between visits, so you'll need to tap \"Connect Bluetooth Printer\" each time you print — that's a browser limitation, not something in the app."
+              : hasRememberedPrinter()
+                ? "Couldn't reach your saved printer (off or out of range) — tap \"Connect Bluetooth Printer\" to pick it again."
+                : 'Tip: Tap "Connect Bluetooth Printer" once and pick your printer — after that, it should auto-connect on future bills without asking again.'}
           </p>
         )}
       </div>
@@ -345,70 +348,83 @@ export default function ThermalReceipt({
         </div>
       )}
 
-      {/* Visual receipt */}
+      {/* Visual receipt — mirrors the physical print layout, including the
+          paper width and margin, so what you see here matches what comes
+          out of the printer instead of a differently-proportioned mockup. */}
       <div
         id="thermal-receipt"
         className="bg-white text-black mx-auto font-mono"
-        style={{ width: '80mm', padding: '4mm', fontSize: '12px', lineHeight: '1.4' }}
+        style={{
+          width: btSettings.paperWidth === '58mm' ? '58mm' : '80mm',
+          padding: '4mm 5mm',
+          fontSize: btSettings.paperWidth === '58mm' ? '10.5px' : '12px',
+          lineHeight: '1.5',
+        }}
       >
         {/* Header */}
         <div className="text-center">
-          <div className="font-bold text-base uppercase tracking-wide">{storeName}</div>
-          <div className="text-[11px]">{storeAddress}</div>
-          <div className="text-[11px]">Tel: {storePhone}</div>
+          <div className="font-bold uppercase tracking-wide" style={{ fontSize: '1.35em' }}>
+            {storeName}
+          </div>
+          <div style={{ fontSize: '0.92em' }}>{storeAddress}</div>
+          <div style={{ fontSize: '0.92em' }}>Tel: {storePhone}</div>
         </div>
 
         <div className="border-t border-dashed border-black my-2" />
 
         {/* Bill info */}
-        <div className="text-[11px]">
-          <div className="flex justify-between">
+        <div style={{ fontSize: '0.92em' }}>
+          <div className="flex justify-between gap-2">
             <span>Bill No:</span>
-            <span className="font-semibold">{bill.bill_number}</span>
+            <span className="font-semibold text-right">{bill.bill_number}</span>
           </div>
-          <div className="flex justify-between">
+          <div className="flex justify-between gap-2">
             <span>Date:</span>
-            <span>{formatDate(bill.created_at)}</span>
+            <span className="text-right">{formatDate(bill.created_at)}</span>
           </div>
           {bill.customer_name && (
-            <div className="flex justify-between">
+            <div className="flex justify-between gap-2">
               <span>Customer:</span>
-              <span>{bill.customer_name}</span>
+              <span className="text-right">{bill.customer_name}</span>
             </div>
           )}
-          <div className="flex justify-between">
+          <div className="flex justify-between gap-2">
             <span>Payment:</span>
-            <span>{bill.payment_method}</span>
+            <span className="text-right">{bill.payment_method}</span>
           </div>
         </div>
 
         <div className="border-t border-dashed border-black my-2" />
 
         {/* Items header */}
-        <div className="flex font-bold text-[11px]">
-          <span className="flex-1">Item</span>
-          <span className="w-10 text-center">Qty</span>
-          <span className="w-16 text-right">Price</span>
-          <span className="w-16 text-right">Amt</span>
+        <div className="flex font-bold gap-1" style={{ fontSize: '0.92em' }}>
+          <span style={{ flex: '1 1 auto', minWidth: 0 }}>Item</span>
+          <span style={{ flex: '0 0 15%', textAlign: 'center' }}>Qty</span>
+          <span style={{ flex: '0 0 22%', textAlign: 'right' }}>Price</span>
+          <span style={{ flex: '0 0 23%', textAlign: 'right' }}>Amt</span>
         </div>
         <div className="border-t border-black my-1" />
 
-        {/* Items */}
+        {/* Items — names wrap instead of truncating, since on screen
+            (unlike the fixed-width thermal paper) there's room to show the
+            whole name rather than cutting it off with "...". */}
         {items.map((item, i) => (
-          <div key={i} className="flex text-[11px] py-0.5">
-            <span className="flex-1 truncate pr-1">
+          <div key={i} className="flex gap-1 py-0.5" style={{ fontSize: '0.92em' }}>
+            <span style={{ flex: '1 1 auto', minWidth: 0, wordBreak: 'break-word' }}>
               {item.product_name}
             </span>
-            <span className="w-10 text-center">{item.quantity}</span>
-            <span className="w-16 text-right">{item.unit_price.toFixed(2)}</span>
-            <span className="w-16 text-right font-semibold">{item.total_price.toFixed(2)}</span>
+            <span style={{ flex: '0 0 15%', textAlign: 'center' }}>{item.quantity}</span>
+            <span style={{ flex: '0 0 22%', textAlign: 'right' }}>{item.unit_price.toFixed(2)}</span>
+            <span style={{ flex: '0 0 23%', textAlign: 'right' }} className="font-semibold">
+              {item.total_price.toFixed(2)}
+            </span>
           </div>
         ))}
 
         <div className="border-t border-dashed border-black my-2" />
 
         {/* Totals */}
-        <div className="text-[11px] space-y-0.5">
+        <div style={{ fontSize: '0.92em' }} className="space-y-0.5">
           <div className="flex justify-between">
             <span>Total Items:</span>
             <span>{bill.total_items}</span>
@@ -428,7 +444,7 @@ export default function ThermalReceipt({
             </>
           )}
           <div className="border-t border-black my-1" />
-          <div className="flex justify-between font-bold text-sm">
+          <div className="flex justify-between font-bold" style={{ fontSize: '1.15em' }}>
             <span>TOTAL:</span>
             <span>{formatCurrency(bill.total)}</span>
           </div>
@@ -437,7 +453,7 @@ export default function ThermalReceipt({
         <div className="border-t border-dashed border-black my-2" />
 
         {/* Footer */}
-        <div className="text-center text-[11px]">
+        <div className="text-center" style={{ fontSize: '0.92em' }}>
           <p className="font-bold">Thank You!</p>
           <p>Visit Again</p>
         </div>
