@@ -15,7 +15,6 @@ import {
   tryAutoReconnect,
   hasRememberedPrinter,
   forgetRememberedPrinter,
-  supportsPersistentBluetoothPermissions,
   type PaperWidth,
 } from '../lib/bluetoothPrinter';
 import { Printer, Bluetooth, Check, AlertCircle, Loader2, Settings, X } from 'lucide-react';
@@ -50,6 +49,12 @@ export default function ThermalReceipt({
   const [showBtSettings, setShowBtSettings] = useState(false);
   const [btSettings, setBtSettings] = useState(getBluetoothPrinterSettings());
   const [autoReconnectTried, setAutoReconnectTried] = useState(false);
+  // Tracks ONLY the silent background auto-reconnect attempt — deliberately
+  // separate from `printerStatus`. Buttons below check `printerStatus`, not
+  // this, so a slow/failing background check on mount can never disable
+  // "Connect" or "Print" or make them look stuck. A user's manual tap
+  // always takes priority and is never blocked by this.
+  const [autoReconnecting, setAutoReconnecting] = useState(false);
   const attemptedRef = useRef(false);
 
   const store: StoreInfo = { storeName, storeAddress, storePhone };
@@ -58,7 +63,9 @@ export default function ThermalReceipt({
   // receipt is shown, so "Print to Thermal Printer" usually just works
   // without a manual "Connect" tap first. Fails silently — this is a
   // background nicety, not a user-initiated action, so no error is shown
-  // if there's no remembered printer or it's unreachable right now.
+  // if there's no remembered printer or it's unreachable right now. This
+  // must NEVER disable or block the buttons below — see autoReconnecting
+  // above.
   useEffect(() => {
     if (attemptedRef.current) return;
     attemptedRef.current = true;
@@ -66,17 +73,20 @@ export default function ThermalReceipt({
       setAutoReconnectTried(true);
       return;
     }
-    setPrinterStatus('connecting');
+    setAutoReconnecting(true);
     tryAutoReconnect()
       .then((device) => {
         if (device) {
           setPrinterStatus('connected');
           setPrinterMsg(`Auto-connected to ${device.name}`);
-        } else {
-          setPrinterStatus('idle');
         }
+        // On failure, deliberately leave printerStatus at 'idle' — nothing
+        // to show, nothing to unstick, buttons were never disabled.
       })
-      .finally(() => setAutoReconnectTried(true));
+      .finally(() => {
+        setAutoReconnecting(false);
+        setAutoReconnectTried(true);
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -103,7 +113,7 @@ export default function ThermalReceipt({
       if (!isBluetoothPrinterConnected()) return;
     }
     setPrinterStatus('printing');
-    setPrinterMsg('Printing receipt...');
+    setPrinterMsg('');
     try {
       const data = buildEscPosReceipt(bill, items, store, getCharsPerLine());
       await printViaBluetooth(data);
@@ -136,11 +146,6 @@ export default function ThermalReceipt({
   }[printerStatus];
 
   const isConnected = printerStatus === 'connected' || printerStatus === 'printing' || printerStatus === 'done';
-  // While the silent auto-reconnect attempt is running, treat the
-  // "connecting" state as quiet (no spinner text) so a failed background
-  // attempt doesn't flash an alarming "Connecting..." the user never asked
-  // for. Once a user taps Connect manually, this no longer applies.
-  const showConnectingUI = printerStatus === 'connecting' && autoReconnectTried;
 
   return (
     <>
@@ -151,13 +156,13 @@ export default function ThermalReceipt({
           #thermal-receipt {
             position: absolute !important;
             left: 0; top: 0;
-            width: ${btSettings.paperWidth};
+            width: 80mm;
             margin: 0;
             box-shadow: none !important;
             border: none !important;
             padding: 4mm !important;
           }
-          @page { size: ${btSettings.paperWidth} auto; margin: 0; }
+          @page { size: 80mm auto; margin: 0; }
         }
       `}</style>
 
@@ -180,7 +185,7 @@ export default function ThermalReceipt({
                   disabled={printerStatus === 'connecting'}
                   className="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white px-4 py-2.5 rounded-lg font-medium transition-colors shadow-sm"
                 >
-                  {showConnectingUI ? (
+                  {printerStatus === 'connecting' ? (
                     <Loader2 size={18} className="animate-spin" />
                   ) : (
                     <Bluetooth size={18} />
@@ -238,13 +243,23 @@ export default function ThermalReceipt({
           </div>
         )}
 
-        {btSupported && printerStatus === 'idle' && autoReconnectTried && (
+        {/* Silent background check for a remembered printer — purely
+            informational. The buttons above are never disabled by this,
+            so tapping "Print to Thermal Printer" right now still works
+            immediately; it just won't have to wait as long for the
+            background attempt to clear out of the way first. */}
+        {autoReconnecting && printerStatus === 'idle' && (
+          <p className="flex items-center gap-1.5 text-xs text-slate-400">
+            <Loader2 size={12} className="animate-spin" />
+            Checking for your saved printer...
+          </p>
+        )}
+
+        {btSupported && printerStatus === 'idle' && !autoReconnecting && autoReconnectTried && (
           <p className="text-xs text-slate-400">
-            {!supportsPersistentBluetoothPermissions()
-              ? "Your browser doesn't support remembering the printer between visits, so you'll need to tap \"Connect Bluetooth Printer\" each time you print — that's a browser limitation, not something in the app."
-              : hasRememberedPrinter()
-                ? "Couldn't reach your saved printer (off or out of range) — tap \"Connect Bluetooth Printer\" to pick it again."
-                : 'Tip: Tap "Connect Bluetooth Printer" once and pick your printer — after that, it should auto-connect on future bills without asking again.'}
+            {hasRememberedPrinter()
+              ? "Couldn't reach your saved printer (off or out of range) — tap \"Connect Bluetooth Printer\" to pick it again."
+              : 'Tip: Tap "Connect Bluetooth Printer" once and pick your printer — after that, it should auto-connect on future bills without asking again.'}
           </p>
         )}
       </div>
@@ -348,83 +363,70 @@ export default function ThermalReceipt({
         </div>
       )}
 
-      {/* Visual receipt — mirrors the physical print layout, including the
-          paper width and margin, so what you see here matches what comes
-          out of the printer instead of a differently-proportioned mockup. */}
+      {/* Visual receipt */}
       <div
         id="thermal-receipt"
         className="bg-white text-black mx-auto font-mono"
-        style={{
-          width: btSettings.paperWidth === '58mm' ? '58mm' : '80mm',
-          padding: '4mm 5mm',
-          fontSize: btSettings.paperWidth === '58mm' ? '10.5px' : '12px',
-          lineHeight: '1.5',
-        }}
+        style={{ width: '80mm', padding: '4mm', fontSize: '12px', lineHeight: '1.4' }}
       >
         {/* Header */}
         <div className="text-center">
-          <div className="font-bold uppercase tracking-wide" style={{ fontSize: '1.35em' }}>
-            {storeName}
-          </div>
-          <div style={{ fontSize: '0.92em' }}>{storeAddress}</div>
-          <div style={{ fontSize: '0.92em' }}>Tel: {storePhone}</div>
+          <div className="font-bold text-base uppercase tracking-wide">{storeName}</div>
+          <div className="text-[11px]">{storeAddress}</div>
+          <div className="text-[11px]">Tel: {storePhone}</div>
         </div>
 
         <div className="border-t border-dashed border-black my-2" />
 
         {/* Bill info */}
-        <div style={{ fontSize: '0.92em' }}>
-          <div className="flex justify-between gap-2">
+        <div className="text-[11px]">
+          <div className="flex justify-between">
             <span>Bill No:</span>
-            <span className="font-semibold text-right">{bill.bill_number}</span>
+            <span className="font-semibold">{bill.bill_number}</span>
           </div>
-          <div className="flex justify-between gap-2">
+          <div className="flex justify-between">
             <span>Date:</span>
-            <span className="text-right">{formatDate(bill.created_at)}</span>
+            <span>{formatDate(bill.created_at)}</span>
           </div>
           {bill.customer_name && (
-            <div className="flex justify-between gap-2">
+            <div className="flex justify-between">
               <span>Customer:</span>
-              <span className="text-right">{bill.customer_name}</span>
+              <span>{bill.customer_name}</span>
             </div>
           )}
-          <div className="flex justify-between gap-2">
+          <div className="flex justify-between">
             <span>Payment:</span>
-            <span className="text-right">{bill.payment_method}</span>
+            <span>{bill.payment_method}</span>
           </div>
         </div>
 
         <div className="border-t border-dashed border-black my-2" />
 
         {/* Items header */}
-        <div className="flex font-bold gap-1" style={{ fontSize: '0.92em' }}>
-          <span style={{ flex: '1 1 auto', minWidth: 0 }}>Item</span>
-          <span style={{ flex: '0 0 15%', textAlign: 'center' }}>Qty</span>
-          <span style={{ flex: '0 0 22%', textAlign: 'right' }}>Price</span>
-          <span style={{ flex: '0 0 23%', textAlign: 'right' }}>Amt</span>
+        <div className="flex font-bold text-[11px]">
+          <span className="flex-1">Item</span>
+          <span className="w-10 text-center">Qty</span>
+          <span className="w-16 text-right">Price</span>
+          <span className="w-16 text-right">Amt</span>
         </div>
         <div className="border-t border-black my-1" />
 
-        {/* Items — names wrap instead of truncating, since on screen
-            (unlike the fixed-width thermal paper) there's room to show the
-            whole name rather than cutting it off with "...". */}
+        {/* Items */}
         {items.map((item, i) => (
-          <div key={i} className="flex gap-1 py-0.5" style={{ fontSize: '0.92em' }}>
-            <span style={{ flex: '1 1 auto', minWidth: 0, wordBreak: 'break-word' }}>
+          <div key={i} className="flex text-[11px] py-0.5">
+            <span className="flex-1 truncate pr-1">
               {item.product_name}
             </span>
-            <span style={{ flex: '0 0 15%', textAlign: 'center' }}>{item.quantity}</span>
-            <span style={{ flex: '0 0 22%', textAlign: 'right' }}>{item.unit_price.toFixed(2)}</span>
-            <span style={{ flex: '0 0 23%', textAlign: 'right' }} className="font-semibold">
-              {item.total_price.toFixed(2)}
-            </span>
+            <span className="w-10 text-center">{item.quantity}</span>
+            <span className="w-16 text-right">{item.unit_price.toFixed(2)}</span>
+            <span className="w-16 text-right font-semibold">{item.total_price.toFixed(2)}</span>
           </div>
         ))}
 
         <div className="border-t border-dashed border-black my-2" />
 
         {/* Totals */}
-        <div style={{ fontSize: '0.92em' }} className="space-y-0.5">
+        <div className="text-[11px] space-y-0.5">
           <div className="flex justify-between">
             <span>Total Items:</span>
             <span>{bill.total_items}</span>
@@ -444,7 +446,7 @@ export default function ThermalReceipt({
             </>
           )}
           <div className="border-t border-black my-1" />
-          <div className="flex justify-between font-bold" style={{ fontSize: '1.15em' }}>
+          <div className="flex justify-between font-bold text-sm">
             <span>TOTAL:</span>
             <span>{formatCurrency(bill.total)}</span>
           </div>
@@ -453,7 +455,7 @@ export default function ThermalReceipt({
         <div className="border-t border-dashed border-black my-2" />
 
         {/* Footer */}
-        <div className="text-center" style={{ fontSize: '0.92em' }}>
+        <div className="text-center text-[11px]">
           <p className="font-bold">Thank You!</p>
           <p>Visit Again</p>
         </div>

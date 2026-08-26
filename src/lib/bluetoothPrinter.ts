@@ -170,21 +170,6 @@ export function hasRememberedPrinter(): boolean {
   return !!getRememberedDeviceId();
 }
 
-/**
- * True only if this browser actually supports remembering Bluetooth
- * permission across visits (navigator.bluetooth.getDevices). Some Chrome
- * builds/versions don't have this enabled, in which case auto-reconnect can
- * never work no matter what — there's no fully silent fallback for that
- * case, so the UI uses this to tell the user honestly instead of just
- * silently failing every time and leaving them confused about why "auto
- * connect" never seems to do anything.
- */
-export function supportsPersistentBluetoothPermissions(): boolean {
-  if (!isWebBluetoothSupported()) return false;
-  const bluetooth = (navigator as any).bluetooth;
-  return typeof bluetooth.getDevices === 'function';
-}
-
 // --- GATT operation lock ---
 // Every function below that touches device.gatt (connect, discover
 // services/characteristics, or write) goes through this so calls never
@@ -207,10 +192,16 @@ function withGattLock<T>(fn: () => Promise<T>): Promise<T> {
 // Timeouts for each stage of talking to the printer. Generous enough for a
 // slow budget printer, short enough that a hung operation fails fast
 // instead of leaving the UI spinning indefinitely.
-const CONNECT_TIMEOUT_MS = 15000;
-const DISCOVERY_TIMEOUT_MS = 10000;
-const WRITE_TIMEOUT_MS = 7000;
-const AUTO_RECONNECT_TIMEOUT_MS = 8000;
+const CONNECT_TIMEOUT_MS = 12000;
+const DISCOVERY_TIMEOUT_MS = 8000;
+const WRITE_TIMEOUT_MS = 6000;
+// Deliberately short: this only guards the SILENT background reconnect
+// attempt on mount. If it can't reach the remembered printer almost
+// immediately, give up fast — this is a background nicety, not something
+// worth making a manual "Connect"/"Print" tap wait behind (both share the
+// same GATT lock, so a slow background attempt would otherwise delay the
+// user's own deliberate action).
+const AUTO_RECONNECT_TIMEOUT_MS = 3500;
 
 /**
  * Races `promise` against a timer so the result *always* settles within
@@ -247,27 +238,13 @@ let connected: ConnectedState | null = null;
  * time a GATT operation times out or otherwise fails in a way that leaves
  * the connection in an unknown state, so the app never gets stuck
  * believing it's still connected to a printer that stopped responding.
- *
- * IMPORTANT: pass the specific `device` that was being talked to, when you
- * have it. This function used to fall back to the module-level `connected`
- * state only, which is exactly wrong for a connect()/discovery timeout: at
- * that point `connected` hasn't been set yet (it's only set after a
- * connection fully succeeds), so this was a no-op — the real device's
- * gatt.connect() call kept running in the background, unaborted, even
- * though the app had already given up on it and shown an error. Chrome
- * still considers that device's GATT "busy" until that stray operation
- * finally resolves on its own, so the *next* connect/print attempt on the
- * same device could throw "GATT operation already in progress" or behave
- * inconsistently — which matches "printer works sometimes, then gets stuck
- * for no reason." Calling device.gatt.disconnect() (even mid-connect)
- * aborts that in-flight operation immediately, so every retry starts clean.
  */
-function forceReset(reason: string, device?: any): void {
-  const target = device ?? connected?.device;
+function forceReset(reason: string): void {
+  const device = connected?.device;
   connected = null;
-  if (target?.gatt) {
+  if (device?.gatt?.connected) {
     try {
-      target.gatt.disconnect();
+      device.gatt.disconnect();
     } catch {
       // best-effort; nothing more we can do
     }
@@ -328,7 +305,7 @@ async function finishConnectingToDevice(device: any): Promise<{ name: string }> 
       ? device.gatt
       : await withTimeout(device.gatt.connect(), CONNECT_TIMEOUT_MS, 'The printer took too long to connect. Turn it off and on, then try again.');
   } catch (err) {
-    forceReset(`gatt.connect() did not complete: ${(err as any)?.message || err}`, device);
+    forceReset(`gatt.connect() did not complete: ${(err as any)?.message || err}`);
     throw err;
   }
 
@@ -341,7 +318,7 @@ async function finishConnectingToDevice(device: any): Promise<{ name: string }> 
       'Connected, but the printer stopped responding while setting up. Try again.',
     ));
   } catch (err) {
-    forceReset(`characteristic discovery did not complete: ${(err as any)?.message || err}`, device);
+    forceReset(`characteristic discovery did not complete: ${(err as any)?.message || err}`);
     throw err;
   }
 
@@ -435,16 +412,12 @@ export async function printViaBluetooth(data: Uint8Array): Promise<void> {
     if (!connected) throw new Error('Printer not connected. Connect first.');
     const { characteristic, writeWithoutResponse } = connected;
 
-    // BLE writes are capped by the negotiated MTU. Without an explicit MTU
-    // negotiation (which Web Bluetooth doesn't expose control over), the
-    // connection can silently be limited to the Bluetooth default — about
-    // 20 usable bytes per write. Sending bigger chunks *sometimes* works
-    // (many printers/phones do negotiate a larger MTU) and sometimes
-    // doesn't, which is exactly the "prints perfectly sometimes, hangs or
-    // fails other times" pattern. Using a conservative 20-byte chunk size
-    // costs a little speed (more chunks) but works reliably across far
-    // more printer/phone combinations.
-    const CHUNK_SIZE = 20;
+    // BLE writes are capped by the negotiated MTU (commonly ~20-180 bytes on
+    // budget printers even when the browser supports larger packets). Split
+    // the receipt into small chunks and write them one at a time, with a
+    // short pause between writes, so long receipts don't overrun the
+    // printer's input buffer and get silently dropped or garbled.
+    const CHUNK_SIZE = 100;
     for (let offset = 0; offset < data.length; offset += CHUNK_SIZE) {
       const chunk = data.slice(offset, offset + CHUNK_SIZE);
       try {
@@ -470,8 +443,11 @@ export async function printViaBluetooth(data: Uint8Array): Promise<void> {
         forceReset(`a chunk write did not complete: ${(err as any)?.message || err}`);
         throw new Error('The printer stopped responding mid-print and was disconnected. Reconnect and try again.');
       }
-      // Small pause between chunks improves reliability on slower printers.
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      // A short pause between chunks improves reliability on slower
+      // printers by not overrunning their input buffer. Kept as small as
+      // seems safe — shortening this further risks reintroducing dropped
+      // chunks on the exact printers this was added for.
+      await new Promise((resolve) => setTimeout(resolve, 12));
     }
   });
 }
