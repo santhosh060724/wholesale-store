@@ -5,7 +5,6 @@ import { buildEscPosReceipt, type StoreInfo } from '../lib/escpos';
 import {
   connectBluetoothPrinter,
   printViaBluetooth,
-  isBluetoothPrinterConnected,
   getConnectedBluetoothPrinterName,
   isWebBluetoothSupported,
   isIOS,
@@ -13,6 +12,7 @@ import {
   saveBluetoothPrinterSettings,
   getCharsPerLine,
   tryAutoReconnect,
+  ensureBluetoothPrinterConnected,
   hasRememberedPrinter,
   forgetRememberedPrinter,
   type PaperWidth,
@@ -49,12 +49,6 @@ export default function ThermalReceipt({
   const [showBtSettings, setShowBtSettings] = useState(false);
   const [btSettings, setBtSettings] = useState(getBluetoothPrinterSettings());
   const [autoReconnectTried, setAutoReconnectTried] = useState(false);
-  // Tracks ONLY the silent background auto-reconnect attempt — deliberately
-  // separate from `printerStatus`. Buttons below check `printerStatus`, not
-  // this, so a slow/failing background check on mount can never disable
-  // "Connect" or "Print" or make them look stuck. A user's manual tap
-  // always takes priority and is never blocked by this.
-  const [autoReconnecting, setAutoReconnecting] = useState(false);
   const attemptedRef = useRef(false);
 
   const store: StoreInfo = { storeName, storeAddress, storePhone };
@@ -63,9 +57,7 @@ export default function ThermalReceipt({
   // receipt is shown, so "Print to Thermal Printer" usually just works
   // without a manual "Connect" tap first. Fails silently — this is a
   // background nicety, not a user-initiated action, so no error is shown
-  // if there's no remembered printer or it's unreachable right now. This
-  // must NEVER disable or block the buttons below — see autoReconnecting
-  // above.
+  // if there's no remembered printer or it's unreachable right now.
   useEffect(() => {
     if (attemptedRef.current) return;
     attemptedRef.current = true;
@@ -73,20 +65,17 @@ export default function ThermalReceipt({
       setAutoReconnectTried(true);
       return;
     }
-    setAutoReconnecting(true);
+    setPrinterStatus('connecting');
     tryAutoReconnect()
       .then((device) => {
         if (device) {
           setPrinterStatus('connected');
           setPrinterMsg(`Auto-connected to ${device.name}`);
+        } else {
+          setPrinterStatus('idle');
         }
-        // On failure, deliberately leave printerStatus at 'idle' — nothing
-        // to show, nothing to unstick, buttons were never disabled.
       })
-      .finally(() => {
-        setAutoReconnecting(false);
-        setAutoReconnectTried(true);
-      });
+      .finally(() => setAutoReconnectTried(true));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -108,21 +97,24 @@ export default function ThermalReceipt({
   };
 
   const handleBluetoothPrint = async () => {
-    if (!isBluetoothPrinterConnected()) {
-      await handleConnectBluetooth();
-      if (!isBluetoothPrinterConnected()) return;
-    }
-    setPrinterStatus('printing');
+    // The print button itself owns the complete connection -> print flow.
+    // This means a saved printer can reconnect silently and a new printer
+    // can be selected without requiring a separate Connect tap.
+    setPrinterStatus('connecting');
     setPrinterMsg('');
     try {
+      await ensureBluetoothPrinterConnected();
+      setPrinterStatus('printing');
+
       const data = buildEscPosReceipt(bill, items, store, getCharsPerLine());
       await printViaBluetooth(data);
+
       setPrinterStatus('done');
-      setPrinterMsg('Receipt sent to printer');
+      setPrinterMsg(`Receipt printed to ${getConnectedBluetoothPrinterName() || 'printer'}`);
       setTimeout(() => setPrinterStatus('connected'), 3000);
     } catch (err: any) {
       setPrinterStatus('error');
-      setPrinterMsg(err.message || 'Print failed. Check Printer Settings if this keeps happening.');
+      setPrinterMsg(err.message || 'Print failed. Check the printer connection and try again.');
     }
   };
 
@@ -146,6 +138,11 @@ export default function ThermalReceipt({
   }[printerStatus];
 
   const isConnected = printerStatus === 'connected' || printerStatus === 'printing' || printerStatus === 'done';
+  // While the silent auto-reconnect attempt is running, treat the
+  // "connecting" state as quiet (no spinner text) so a failed background
+  // attempt doesn't flash an alarming "Connecting..." the user never asked
+  // for. Once a user taps Connect manually, this no longer applies.
+  const showConnectingUI = printerStatus === 'connecting' && autoReconnectTried;
 
   return (
     <>
@@ -157,6 +154,7 @@ export default function ThermalReceipt({
             position: absolute !important;
             left: 0; top: 0;
             width: 80mm;
+            box-sizing: border-box !important;
             margin: 0;
             box-shadow: none !important;
             border: none !important;
@@ -185,7 +183,7 @@ export default function ThermalReceipt({
                   disabled={printerStatus === 'connecting'}
                   className="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white px-4 py-2.5 rounded-lg font-medium transition-colors shadow-sm"
                 >
-                  {printerStatus === 'connecting' ? (
+                  {showConnectingUI ? (
                     <Loader2 size={18} className="animate-spin" />
                   ) : (
                     <Bluetooth size={18} />
@@ -195,7 +193,7 @@ export default function ThermalReceipt({
               )}
               <button
                 onClick={handleBluetoothPrint}
-                disabled={printerStatus === 'printing' || printerStatus === 'connecting'}
+                disabled={printerStatus === 'printing'}
                 className="inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-4 py-2.5 rounded-lg font-medium transition-colors shadow-sm"
               >
                 {printerStatus === 'printing' ? (
@@ -243,19 +241,7 @@ export default function ThermalReceipt({
           </div>
         )}
 
-        {/* Silent background check for a remembered printer — purely
-            informational. The buttons above are never disabled by this,
-            so tapping "Print to Thermal Printer" right now still works
-            immediately; it just won't have to wait as long for the
-            background attempt to clear out of the way first. */}
-        {autoReconnecting && printerStatus === 'idle' && (
-          <p className="flex items-center gap-1.5 text-xs text-slate-400">
-            <Loader2 size={12} className="animate-spin" />
-            Checking for your saved printer...
-          </p>
-        )}
-
-        {btSupported && printerStatus === 'idle' && !autoReconnecting && autoReconnectTried && (
+        {btSupported && printerStatus === 'idle' && autoReconnectTried && (
           <p className="text-xs text-slate-400">
             {hasRememberedPrinter()
               ? "Couldn't reach your saved printer (off or out of range) — tap \"Connect Bluetooth Printer\" to pick it again."

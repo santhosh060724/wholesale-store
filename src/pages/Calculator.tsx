@@ -254,7 +254,6 @@ export default function Calculator() {
             '0', '.', '00', '+',
           ].map((key) => {
             const isOperator = key === '×' || key === '+';
-            const isAction = key === 'C' || key === '⌫';
 
             return (
               <button

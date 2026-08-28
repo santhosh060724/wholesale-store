@@ -1,12 +1,11 @@
-import { useEffect, useState } from 'react';
-import { LayoutDashboard, ShoppingCart, Package, Receipt, Store, Users, Calculator as CalculatorIcon } from 'lucide-react';
+import { useState } from 'react';
+import { LayoutDashboard, ShoppingCart, Package, Receipt, Users, Calculator as CalculatorIcon } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
 import Billing from './pages/Billing';
 import Products from './pages/Products';
 import History from './pages/History';
 import StaffPage from './pages/Staff';
 import CalculatorPage from './pages/Calculator';
-import { tryAutoReconnect, hasRememberedPrinter } from './lib/bluetoothPrinter';
 
 type Tab = 'dashboard' | 'billing' | 'products' | 'history' | 'staff' | 'calculator';
 
@@ -21,20 +20,6 @@ const tabs: { id: Tab; label: string; icon: typeof LayoutDashboard }[] = [
 
 function App() {
   const [active, setActive] = useState<Tab>('billing');
-
-  // Start trying to reconnect to the last-used printer the moment the app
-  // opens — not the moment a bill is finished and "Print" is about to be
-  // tapped. By the time the user has added items and checked out, the
-  // connection has usually had many seconds (rather than a race against
-  // their click) to complete in the background, so printing feels
-  // immediate instead of waiting on the connection first. Purely a
-  // background warm-up: fails silently if there's no remembered printer or
-  // it's unreachable right now, same as before.
-  useEffect(() => {
-    if (hasRememberedPrinter()) {
-      tryAutoReconnect();
-    }
-  }, []);
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col lg:flex-row">
