@@ -57,8 +57,7 @@
 const COMMON_PRINTER_SERVICE_UUIDS = [
   '000018f0-0000-1000-8000-00805f9b34fb', // common "GP"-style BLE printer service
   '0000ffe0-0000-1000-8000-00805f9b34fb', // HM-10/HC-08 UART clone, used by many generic printers
-  '0000ff00-0000-1000-8000-00805f9b34fb', // common CN811/vendor print service
-  '0000ff10-0000-1000-8000-00805f9b34fb', // CN811-family BLE service seen on Windows
+  '0000ff00-0000-1000-8000-00805f9b34fb', // another common vendor print service
   '49535343-fe7d-4ae5-8fa9-9fafd205e455', // ISSC/Microchip UART service, seen on some printers
   '6e400001-b5a3-f393-e0a9-e50e24dcca9e', // Nordic UART Service (NUS)
 ];
@@ -195,8 +194,8 @@ function withGattLock<T>(fn: () => Promise<T>): Promise<T> {
 // instead of leaving the UI spinning indefinitely.
 const CONNECT_TIMEOUT_MS = 15000;
 const DISCOVERY_TIMEOUT_MS = 10000;
-const WRITE_TIMEOUT_MS = 5000;
-const AUTO_RECONNECT_TIMEOUT_MS = 10000;
+const WRITE_TIMEOUT_MS = 7000;
+const AUTO_RECONNECT_TIMEOUT_MS = 8000;
 
 /**
  * Races `promise` against a timer so the result *always* settles within
@@ -398,23 +397,6 @@ export async function tryAutoReconnect(): Promise<{ name: string } | null> {
   }
 }
 
-/**
- * Print-button connection path. First reuse the live connection, then try
- * the previously-authorized printer silently, and only then show the
- * browser's Bluetooth picker. This prevents a manual reconnect on every bill
- * while keeping the picker available when the printer was replaced.
- */
-export async function ensureBluetoothPrinterConnected(): Promise<{ name: string }> {
-  if (isBluetoothPrinterConnected()) {
-    return { name: getConnectedBluetoothPrinterName() || 'Bluetooth Printer' };
-  }
-
-  const auto = await tryAutoReconnect();
-  if (auto) return auto;
-
-  return connectBluetoothPrinter();
-}
-
 export async function printViaBluetooth(data: Uint8Array): Promise<void> {
   if (!connected || !connected.device?.gatt?.connected) {
     throw new Error('Printer not connected. Connect first.');
@@ -429,12 +411,7 @@ export async function printViaBluetooth(data: Uint8Array): Promise<void> {
     // the receipt into small chunks and write them one at a time, with a
     // short pause between writes, so long receipts don't overrun the
     // printer's input buffer and get silently dropped or garbled.
-    // 20 bytes is the safest cross-printer BLE payload size. It works with
-    // older BLE UART/thermal printers whose negotiated ATT payload remains
-    // at the default 23-byte MTU (20 usable bytes), while still working on
-    // printers that support larger MTUs. The small pause prevents cheap
-    // printer buffers from being overrun.
-    const CHUNK_SIZE = 20;
+    const CHUNK_SIZE = 100;
     for (let offset = 0; offset < data.length; offset += CHUNK_SIZE) {
       const chunk = data.slice(offset, offset + CHUNK_SIZE);
       try {
@@ -461,7 +438,7 @@ export async function printViaBluetooth(data: Uint8Array): Promise<void> {
         throw new Error('The printer stopped responding mid-print and was disconnected. Reconnect and try again.');
       }
       // Small pause between chunks improves reliability on slower printers.
-      await new Promise((resolve) => setTimeout(resolve, 8));
+      await new Promise((resolve) => setTimeout(resolve, 20));
     }
   });
 }

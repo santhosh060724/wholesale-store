@@ -5,6 +5,7 @@ import { buildEscPosReceipt, type StoreInfo } from '../lib/escpos';
 import {
   connectBluetoothPrinter,
   printViaBluetooth,
+  isBluetoothPrinterConnected,
   getConnectedBluetoothPrinterName,
   isWebBluetoothSupported,
   isIOS,
@@ -12,7 +13,6 @@ import {
   saveBluetoothPrinterSettings,
   getCharsPerLine,
   tryAutoReconnect,
-  ensureBluetoothPrinterConnected,
   hasRememberedPrinter,
   forgetRememberedPrinter,
   type PaperWidth,
@@ -97,24 +97,21 @@ export default function ThermalReceipt({
   };
 
   const handleBluetoothPrint = async () => {
-    // The print button itself owns the complete connection -> print flow.
-    // This means a saved printer can reconnect silently and a new printer
-    // can be selected without requiring a separate Connect tap.
-    setPrinterStatus('connecting');
+    if (!isBluetoothPrinterConnected()) {
+      await handleConnectBluetooth();
+      if (!isBluetoothPrinterConnected()) return;
+    }
+    setPrinterStatus('printing');
     setPrinterMsg('');
     try {
-      await ensureBluetoothPrinterConnected();
-      setPrinterStatus('printing');
-
       const data = buildEscPosReceipt(bill, items, store, getCharsPerLine());
       await printViaBluetooth(data);
-
       setPrinterStatus('done');
-      setPrinterMsg(`Receipt printed to ${getConnectedBluetoothPrinterName() || 'printer'}`);
+      setPrinterMsg('Receipt sent to printer');
       setTimeout(() => setPrinterStatus('connected'), 3000);
     } catch (err: any) {
       setPrinterStatus('error');
-      setPrinterMsg(err.message || 'Print failed. Check the printer connection and try again.');
+      setPrinterMsg(err.message || 'Print failed. Check Printer Settings if this keeps happening.');
     }
   };
 
@@ -154,7 +151,6 @@ export default function ThermalReceipt({
             position: absolute !important;
             left: 0; top: 0;
             width: 80mm;
-            box-sizing: border-box !important;
             margin: 0;
             box-shadow: none !important;
             border: none !important;
@@ -193,7 +189,7 @@ export default function ThermalReceipt({
               )}
               <button
                 onClick={handleBluetoothPrint}
-                disabled={printerStatus === 'printing'}
+                disabled={printerStatus === 'printing' || printerStatus === 'connecting'}
                 className="inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-4 py-2.5 rounded-lg font-medium transition-colors shadow-sm"
               >
                 {printerStatus === 'printing' ? (

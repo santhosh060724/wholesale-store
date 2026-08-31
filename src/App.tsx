@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { LayoutDashboard, ShoppingCart, Package, Receipt, Users, Calculator as CalculatorIcon } from 'lucide-react';
+import { LayoutDashboard, ShoppingCart, Package, Receipt, Store, Users, Calculator as CalculatorIcon } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
 import Billing from './pages/Billing';
 import Products from './pages/Products';
