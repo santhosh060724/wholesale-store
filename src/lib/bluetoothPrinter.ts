@@ -128,7 +128,7 @@ export function saveBluetoothPrinterSettings(settings: BluetoothPrinterSettings)
 
 /** Characters-per-line to hand to buildEscPosReceipt for the saved paper width. */
 export function getCharsPerLine(): number {
-  return getBluetoothPrinterSettings().paperWidth === '58mm' ? 32 : 48;
+  return getBluetoothPrinterSettings().paperWidth === '58mm' ? 32 : 74;
 }
 
 export function isWebBluetoothSupported(): boolean {
@@ -332,6 +332,13 @@ async function finishConnectingToDevice(device: any): Promise<{ name: string }> 
 }
 
 export async function connectBluetoothPrinter(): Promise<{ name: string }> {
+  // Reuse the live connection whenever possible. This prevents the app from
+  // opening the Bluetooth device picker again just because the receipt
+  // component was rendered for another bill.
+  if (connected?.device?.gatt?.connected) {
+    return { name: connected.name };
+  }
+
   if (!isWebBluetoothSupported()) {
     if (isIOS()) {
       throw new Error(
@@ -370,6 +377,19 @@ export async function connectBluetoothPrinter(): Promise<{ name: string }> {
  * printer isn't currently reachable (off / out of range) — all of these
  * are normal, expected outcomes for a background attempt, not errors.
  */
+/**
+ * Ensures the last authorized printer is connected without opening the
+ * Bluetooth picker. The picker is used only as a final fallback when the
+ * browser cannot silently reconnect the remembered device.
+ */
+export async function ensureBluetoothPrinterConnected(): Promise<{ name: string } | null> {
+  if (!isWebBluetoothSupported()) return null;
+  if (isBluetoothPrinterConnected()) {
+    return { name: getConnectedBluetoothPrinterName() || 'Bluetooth Printer' };
+  }
+  return tryAutoReconnect();
+}
+
 export async function tryAutoReconnect(): Promise<{ name: string } | null> {
   if (!isWebBluetoothSupported()) return null;
   const bluetooth = (navigator as any).bluetooth;

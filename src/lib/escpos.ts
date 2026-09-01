@@ -19,6 +19,7 @@ const boldOff = () => cmd(ESC, 0x45, 0x00);
 const doubleWidthOn = () => cmd(GS, 0x21, 0x10);
 const doubleWidthOff = () => cmd(GS, 0x21, 0x00);
 const textSize = (n: number) => cmd(GS, 0x21, n);
+const fontB = () => cmd(ESC, 0x4d, 0x01); // compact font for 80mm / 74-column receipts
 
 const line = (s = '') => enc.encode(s + '\n');
 
@@ -52,7 +53,7 @@ export type StoreInfo = {
  *   line. This depends on the physical paper width and the printer's
  *   default font — NOT something we can detect automatically over
  *   Bluetooth, so it's passed in from the user's Printer Settings (see
- *   bluetoothPrinter.ts). Common values: 32 for 58mm paper, 48 for 80mm
+ *   bluetoothPrinter.ts). Common values: 32 for 58mm paper, 74 for 80mm
  *   paper (both at the printer's normal/default font size). Getting this
  *   wrong is exactly what causes a big blank margin on one side of the
  *   printed receipt (too narrow) or wrapped/cut-off text (too wide).
@@ -61,8 +62,11 @@ export function buildEscPosReceipt(
   bill: Bill,
   items: BillItem[],
   store: StoreInfo,
-  charsPerLine = 48,
+  charsPerLine = 74,
 ): Uint8Array {
+  // 80mm printers are commonly driven in a compact ESC/POS font. The
+  // requested 74 columns use the printable area much more effectively than
+  // the old 48-column layout. Keep 58mm at its traditional 32 columns.
   const W = charsPerLine;
   const chunks: Uint8Array[] = [];
 
@@ -84,6 +88,7 @@ export function buildEscPosReceipt(
   const totalsLabelW = W - totalsValueW;
 
   chunks.push(init());
+  if (W >= 70) chunks.push(fontB());
   chunks.push(alignCenter());
   chunks.push(boldOn());
   chunks.push(doubleWidthOn());
@@ -149,7 +154,7 @@ export function buildEscPosReceipt(
   chunks.push(boldOff());
   chunks.push(line('Visit Again'));
   chunks.push(feed(1));
-  chunks.push(line('This is a computer generated bill'));
+  // chunks.push(line('This is a computer generated bill'));
   chunks.push(feed(1));
   chunks.push(line(bill.bill_number));
 

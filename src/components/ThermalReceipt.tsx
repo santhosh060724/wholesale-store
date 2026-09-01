@@ -13,6 +13,7 @@ import {
   saveBluetoothPrinterSettings,
   getCharsPerLine,
   tryAutoReconnect,
+  ensureBluetoothPrinterConnected,
   hasRememberedPrinter,
   forgetRememberedPrinter,
   type PaperWidth,
@@ -97,10 +98,32 @@ export default function ThermalReceipt({
   };
 
   const handleBluetoothPrint = async () => {
+    // First reuse the existing connection, then silently reconnect to the
+    // last authorized printer. Only show the Bluetooth picker if the silent
+    // reconnect is unavailable. This makes printing successive bills a
+    // one-tap operation instead of requiring pairing on every bill.
     if (!isBluetoothPrinterConnected()) {
-      await handleConnectBluetooth();
-      if (!isBluetoothPrinterConnected()) return;
+      setPrinterStatus('connecting');
+      setPrinterMsg('');
+      const reconnected = await ensureBluetoothPrinterConnected();
+      if (!reconnected) {
+        // No remembered/reachable printer. Now, and only now, ask the user
+        // to choose a printer.
+        try {
+          const device = await connectBluetoothPrinter();
+          setPrinterStatus('connected');
+          setPrinterMsg(`Connected to ${device.name}`);
+        } catch (err: any) {
+          setPrinterStatus('error');
+          setPrinterMsg(err.message || 'Failed to connect to Bluetooth printer');
+          return;
+        }
+      } else {
+        setPrinterStatus('connected');
+        setPrinterMsg(`Connected to ${reconnected.name}`);
+      }
     }
+    if (!isBluetoothPrinterConnected()) return;
     setPrinterStatus('printing');
     setPrinterMsg('');
     try {
@@ -150,11 +173,14 @@ export default function ThermalReceipt({
           #thermal-receipt {
             position: absolute !important;
             left: 0; top: 0;
-            width: 80mm;
-            margin: 0;
+            width: 80mm !important;
+            max-width: 80mm !important;
+            box-sizing: border-box !important;
+            margin: 0 !important;
             box-shadow: none !important;
             border: none !important;
-            padding: 4mm !important;
+            padding: 3mm 2.5mm !important;
+            overflow: hidden !important;
           }
           @page { size: 80mm auto; margin: 0; }
         }
@@ -349,7 +375,14 @@ export default function ThermalReceipt({
       <div
         id="thermal-receipt"
         className="bg-white text-black mx-auto font-mono"
-        style={{ width: '80mm', padding: '4mm', fontSize: '12px', lineHeight: '1.4' }}
+        style={{
+          width: '80mm',
+          maxWidth: '80mm',
+          boxSizing: 'border-box',
+          padding: '3mm 2.5mm',
+          fontSize: '10px',
+          lineHeight: '1.4',
+        }}
       >
         {/* Header */}
         <div className="text-center">
