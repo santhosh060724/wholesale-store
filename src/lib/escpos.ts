@@ -19,7 +19,7 @@ const boldOff = () => cmd(ESC, 0x45, 0x00);
 const doubleWidthOn = () => cmd(GS, 0x21, 0x10);
 const doubleWidthOff = () => cmd(GS, 0x21, 0x00);
 const textSize = (n: number) => cmd(GS, 0x21, n);
-const fontB = () => cmd(ESC, 0x4d, 0x01); // compact font for 80mm / 74-column receipts
+const fontB = () => cmd(ESC, 0x4d, 0x01); // compact ESC/POS Font B (reliable 64-column layout on standard 80mm printers)
 
 const line = (s = '') => enc.encode(s + '\n');
 
@@ -53,8 +53,8 @@ export type StoreInfo = {
  *   line. This depends on the physical paper width and the printer's
  *   default font — NOT something we can detect automatically over
  *   Bluetooth, so it's passed in from the user's Printer Settings (see
- *   bluetoothPrinter.ts). Common values: 32 for 58mm paper, 74 for 80mm
- *   paper (both at the printer's normal/default font size). Getting this
+ *   bluetoothPrinter.ts). Common values: 32 for 58mm paper, 64 for 80mm paper.
+ *   Getting this
  *   wrong is exactly what causes a big blank margin on one side of the
  *   printed receipt (too narrow) or wrapped/cut-off text (too wide).
  */
@@ -62,65 +62,83 @@ export function buildEscPosReceipt(
   bill: Bill,
   items: BillItem[],
   store: StoreInfo,
-  charsPerLine = 74,
+  charsPerLine = 64,
 ): Uint8Array {
-  // 80mm printers are commonly driven in a compact ESC/POS font. The
-  // requested 74 columns use the printable area much more effectively than
-  // the old 48-column layout. Keep 58mm at its traditional 32 columns.
+  // Standard 80mm thermal printers typically expose 64 printable columns
+  // in ESC/POS Font B. Using 74 characters here is too wide for these printers
+  // and causes the fourth column (Amt) to wrap underneath the item name.
+  // 64 columns fills the printable width cleanly while keeping all four
+  // columns on one physical line. Keep 58mm at 32 columns.
   const W = charsPerLine;
   const chunks: Uint8Array[] = [];
 
-  // Column widths for the item table, sized to the actual paper width so
-  // the whole line — not just the left third of it — gets used.
-  const wide = W >= 40;
+  // Keep a small physical margin on both sides of the receipt. For the
+  // standard 80mm layout this gives 64 total columns = 2 margin + 60 content
+  // + 2 margin. This is wide enough to use the paper properly while avoiding
+  // the wrapping seen when 74 characters are sent to a 64-column printer.
+  const marginW = W >= 60 ? 2 : 1;
+  const contentW = W - marginW * 2;
+  const withMargins = (s = '') => line(
+    ' '.repeat(marginW) + pad(s, contentW) + ' '.repeat(marginW),
+  );
+  const divider = (char: string) => withMargins(char.repeat(contentW));
+
+  // Column widths for the item table. The four columns always remain on one
+  // physical line: Item | Qty | Price | Amt.
+  const wide = contentW >= 40;
   const qtyW = wide ? 7 : 5;
-  const priceW = wide ? 10 : 7;
-  const amtW = wide ? 10 : 7;
-  const nameW = W - qtyW - priceW - amtW;
+  const priceW = wide ? 11 : 7;
+  const amtW = wide ? 11 : 7;
+  const nameW = contentW - qtyW - priceW - amtW;
 
-  // Two-column label/value layout for the header block, also sized to W.
-  const labelW = Math.floor(W / 2);
-  const valueW = W - labelW;
+  // Two-column label/value layout for the header block.
+  const labelW = Math.floor(contentW / 2);
+  const valueW = contentW - labelW;
 
-  // Label/value layout for the totals block — value column stays a fixed
-  // width wide enough for large currency amounts, label takes the rest.
-  const totalsValueW = 12;
-  const totalsLabelW = W - totalsValueW;
+  // Label/value layout for the totals block — value column stays fixed and
+  // the label gets the remaining content width.
+  const totalsValueW = wide ? 11 : 9;
+  const totalsLabelW = contentW - totalsValueW;
 
   chunks.push(init());
-  if (W >= 70) chunks.push(fontB());
+  if (W >= 60) chunks.push(fontB());
   chunks.push(alignCenter());
   chunks.push(boldOn());
   chunks.push(doubleWidthOn());
+  // The printer centers the store name; do not pad this line to 64
+  // characters while double-width mode is active, or the padding itself
+  // would also be doubled and could wrap.
   chunks.push(line(store.storeName.toUpperCase()));
   chunks.push(doubleWidthOff());
   chunks.push(boldOff());
-  chunks.push(line(store.storeAddress));
-  chunks.push(line('Tel: ' + store.storePhone));
+  chunks.push(withMargins(store.storeAddress));
+  chunks.push(withMargins('Tel: ' + store.storePhone));
   chunks.push(feed(1));
 
   chunks.push(alignLeft());
-  chunks.push(line('-'.repeat(W)));
-  chunks.push(line(pad('Bill No:', labelW) + pad(bill.bill_number, valueW, 'right')));
-  chunks.push(line(pad('Date:', labelW) + pad(formatDate(bill.created_at), valueW, 'right')));
+  chunks.push(divider('-'));
+  chunks.push(withMargins(pad('Bill No:', labelW) + pad(bill.bill_number, valueW, 'right')));
+  chunks.push(withMargins(pad('Date:', labelW) + pad(formatDate(bill.created_at), valueW, 'right')));
   if (bill.customer_name) {
-    chunks.push(line(pad('Customer:', labelW) + pad(bill.customer_name, valueW, 'right')));
+    chunks.push(withMargins(pad('Customer:', labelW) + pad(bill.customer_name, valueW, 'right')));
   }
-  chunks.push(line(pad('Payment:', labelW) + pad(bill.payment_method, valueW, 'right')));
-  chunks.push(line('-'.repeat(W)));
+  chunks.push(withMargins(pad('Payment:', labelW) + pad(bill.payment_method, valueW, 'right')));
+  chunks.push(divider('-'));
 
   // Items header
   chunks.push(boldOn());
-  chunks.push(line(
-    pad('Item', nameW) + pad('Qty', qtyW) + pad('Price', priceW, 'right') + pad('Amt', amtW, 'right'),
+  chunks.push(withMargins(
+    pad('Name', nameW) + pad('Quantity', qtyW) + pad('Price', priceW, 'right') + pad('Amount', amtW, 'right'),
   ));
   chunks.push(boldOff());
-  chunks.push(line('='.repeat(W)));
+  chunks.push(divider('='));
 
   // Items
   for (const item of items) {
-    const name = item.product_name.length > nameW ? item.product_name.slice(0, nameW) : item.product_name;
-    chunks.push(line(
+    const name = item.product_name.length > nameW
+      ? item.product_name.slice(0, Math.max(0, nameW - 3)) + '...'
+      : item.product_name;
+    chunks.push(withMargins(
       pad(name, nameW) +
         pad(formatQty(item.quantity), qtyW) +
         pad(formatAmount(item.unit_price), priceW, 'right') +
@@ -128,35 +146,37 @@ export function buildEscPosReceipt(
     ));
   }
 
-  chunks.push(line('-'.repeat(W)));
+  chunks.push(divider('-'));
 
   // Totals
-  chunks.push(line(pad('Total Items:', totalsLabelW) + pad(String(bill.total_items), totalsValueW, 'right')));
-  chunks.push(line(pad('Subtotal:', totalsLabelW) + pad(formatAmount(bill.subtotal), totalsValueW, 'right')));
+  chunks.push(withMargins(pad('Total Items:', totalsLabelW) + pad(String(bill.total_items), totalsValueW, 'right')));
+  chunks.push(withMargins(pad('Subtotal:', totalsLabelW) + pad(formatAmount(bill.subtotal), totalsValueW, 'right')));
   if (bill.discount_amount > 0) {
     const label =
       'Discount (' +
       (bill.discount_type === 'percent' ? `${bill.discount_value}%` : 'Flat') +
       '):';
-    chunks.push(line(pad(label, totalsLabelW) + pad('-' + formatAmount(bill.discount_amount), totalsValueW, 'right')));
+    chunks.push(withMargins(pad(label, totalsLabelW) + pad('-' + formatAmount(bill.discount_amount), totalsValueW, 'right')));
   }
-  chunks.push(line('='.repeat(W)));
+  chunks.push(divider('='));
   chunks.push(boldOn());
-  chunks.push(textSize(0x11));
-  chunks.push(line(pad('TOTAL:', labelW) + pad(formatAmount(bill.total), valueW, 'right')));
+  // Double-height only: double-width would turn a 64-column totals row
+  // into a 128-column line and make the amount wrap.
+  chunks.push(textSize(0x01));
+  chunks.push(withMargins(pad('TOTAL:', labelW) + pad(formatAmount(bill.total), valueW, 'right')));
   chunks.push(textSize(0x00));
   chunks.push(boldOff());
 
-  chunks.push(line('-'.repeat(W)));
+  chunks.push(divider('-'));
   chunks.push(alignCenter());
   chunks.push(boldOn());
-  chunks.push(line('Thank You!'));
+  chunks.push(withMargins('Thank You!'));
   chunks.push(boldOff());
-  chunks.push(line('Visit Again'));
+  chunks.push(withMargins('Visit Again'));
   chunks.push(feed(1));
-  // chunks.push(line('This is a computer generated bill'));
+  chunks.push(withMargins('This is a computer generated bill'));
   chunks.push(feed(1));
-  chunks.push(line(bill.bill_number));
+  chunks.push(withMargins(bill.bill_number));
 
   chunks.push(feed(3));
   chunks.push(cut());

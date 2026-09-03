@@ -126,9 +126,16 @@ export function saveBluetoothPrinterSettings(settings: BluetoothPrinterSettings)
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(clean));
 }
 
-/** Characters-per-line to hand to buildEscPosReceipt for the saved paper width. */
+/**
+ * Characters-per-line for the ESC/POS receipt formatter.
+ *
+ * 80mm printers are normally 576 dots wide and expose 64 columns in the
+ * compact Font B used by this app. 74 text columns exceed that printable
+ * width on many common Bluetooth thermal printers and cause the fourth
+ * column (Amt) to wrap onto a second line.
+ */
 export function getCharsPerLine(): number {
-  return getBluetoothPrinterSettings().paperWidth === '58mm' ? 32 : 74;
+  return getBluetoothPrinterSettings().paperWidth === '58mm' ? 32 : 64;
 }
 
 export function isWebBluetoothSupported(): boolean {
